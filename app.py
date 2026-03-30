@@ -1,52 +1,35 @@
 import streamlit as st
-import requests
+import google.generativeai as genai
 
-st.set_page_config(page_title="AI股票助手", page_icon="📈", layout="centered")
+st.set_page_config(page_title="AI股票助手 (Gemini版)", page_icon="📈", layout="centered")
 
-st.title("📈 AI 股票助手")
-st.write("输入股票代码，获取 AI 分析。")
+st.title("📈 AI 股票助手 (Gemini)")
+st.write("输入股票代码，获取免费的 AI 分析。")
 
-api_key = st.secrets.get("DEEPSEEK_API_KEY", "")
-base_url = st.secrets.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
-model_name = st.secrets.get("DEFAULT_MODEL_NAME", "deepseek-chat")
+# 从 Streamlit 后台获取 Gemini 密钥
+api_key = st.secrets.get("GEMINI_API_KEY", "")
 
 symbol = st.text_input("股票代码", placeholder="例如：000001 或 AAPL")
 
 if st.button("开始分析"):
     if not api_key:
-        st.error("没有读取到 DEEPSEEK_API_KEY，请先去 Streamlit Secrets 里配置。")
+        st.error("请先在 Streamlit Secrets 中配置 GEMINI_API_KEY")
     elif not symbol.strip():
         st.warning("请输入股票代码。")
     else:
-        with st.spinner("正在分析中..."):
+        with st.spinner("Gemini 正在思考中..."):
             try:
-                url = f"{base_url}/chat/completions"
-                headers = {
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                }
-                payload = {
-                    "model": model_name,
-                    "messages": [
-                        {
-                            "role": "system",
-                            "content": "你是一名谨慎、清晰的股票分析助手。请从基本面、技术面、风险点三个方面给出简洁分析，并明确说明这不是投资建议。"
-                        },
-                        {
-                            "role": "user",
-                            "content": f"请分析股票 {symbol}。"
-                        }
-                    ],
-                    "temperature": 0.7,
-                }
-
-                resp = requests.post(url, headers=headers, json=payload, timeout=60)
-                resp.raise_for_status()
-                data = resp.json()
-                answer = data["choices"][0]["message"]["content"]
-
+                # 配置 Gemini
+                genai.configure(api_key=api_key)
+                model = genai.GenerativeModel('gemini-1.5-flash')
+                
+                # 发送指令
+                prompt = f"你是一名专业的股票分析助手。请分析股票 {symbol}，从基本面、技术面、风险点三个方面给出简洁分析，并明确说明这不是投资建议。请使用中文回答。"
+                
+                response = model.generate_content(prompt)
+                
                 st.success("分析完成")
-                st.write(answer)
+                st.write(response.text)
 
             except Exception as e:
-                st.error(f"调用失败：{e}")
+                st.error(f"分析失败，请检查密钥是否正确或网络是否通畅。错误信息：{e}")
