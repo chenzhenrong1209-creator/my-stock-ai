@@ -2,3 +2,4 @@ streamlit
 groq
 pandas
 requests
+numpy
