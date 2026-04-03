@@ -7,54 +7,70 @@ from datetime import datetime
 
 st.set_page_config(page_title="AI股票投研系统", page_icon="📈", layout="wide")
 
-st.title("📈 AI 股票投研系统 (增强兼容版)")
+st.title("📈 AI 股票投研系统 (核心修补版)")
 
 api_key = st.secrets.get("GROQ_API_KEY", "")
 
 # ================= 核心数据抓取函数 =================
-# 增加模拟浏览器伪装，防止被东方财富拦截
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 }
 
 def get_market_code(symbol):
+    """动态判断股票归属市场 (1=沪市/科创板, 0=深市/创业板)"""
     symbol = str(symbol).strip()
-    # 优化路由：涵盖沪市A股(6)、科创板(688)、B股(9)、ETF基金(5)、新股(7)等
     if symbol.startswith(('6', '9', '5', '7')):
-        return "1"
-    # 其他默认深市或北交所：0, 2, 3(创业板), 1(深市基金), 8/4(北交所)
+        return "1" 
     return "0"
 
-def get_realtime_quote(symbol):
-    market = get_market_code(symbol)
-    # 独立处理指数
-    if symbol == "000001": market = "1"
-    if symbol == "399001": market = "0"
-    if symbol == "399006": market = "0"
-    if symbol == "000300": market = "1"
-
-    url = f"https://push2.eastmoney.com/api/qt/stock/get?secid={market}.{symbol}&fields=f57,f58,f43,f170,f169,f47,f48,f60,f44,f45,f46,f168"
+def get_realtime_quote(symbol_or_secid):
+    """
+    获取实时报价。
+    如果传入的是带有小数点的 secid (例如 1.000001 上证指数)，则直接使用。
+    如果传入纯数字 (例如 000001 平安银行)，则自动计算归属市场。
+    """
+    symbol = str(symbol_or_secid).strip()
+    if "." in symbol:
+        secid = symbol
+    else:
+        market = get_market_code(symbol)
+        secid = f"{market}.{symbol}"
+        
+    url = f"https://push2.eastmoney.com/api/qt/stock/get?secid={secid}&fields=f57,f58,f43,f170,f169,f47,f48,f60,f44,f45,f46,f168"
     try:
         res = requests.get(url, headers=HEADERS, timeout=5).json()
-        return res.get('data')
-    except:
+        if res and res.get('data'):
+            return res['data']
+        return None
+    except Exception as e:
         return None
 
-def get_kline_data(symbol, days=60):
-    market = get_market_code(symbol)
-    url = f"http://push2his.eastmoney.com/api/qt/stock/kline/get?secid={market}.{symbol}&klt=101&fqt=1&lmt={days}&end=20500101&iscca=1&fields1=f1,f2,f3,f4,f5&fields2=f51,f52,f53,f54,f55,f56,f57"
+def get_kline_data(symbol_or_secid, days=60):
+    symbol = str(symbol_or_secid).strip()
+    if "." in symbol:
+        secid = symbol
+    else:
+        market = get_market_code(symbol)
+        secid = f"{market}.{symbol}"
+
+    url = f"https://push2his.eastmoney.com/api/qt/stock/kline/get?secid={secid}&klt=101&fqt=1&lmt={days}&end=20500101&iscca=1&fields1=f1,f2,f3,f4,f5&fields2=f51,f52,f53,f54,f55,f56,f57"
     try:
         res = requests.get(url, headers=HEADERS, timeout=5).json()
         if not res or 'data' not in res or not res['data']:
             return None
         klines = res['data'].get('klines', [])
+        if not klines:
+            return None
+            
         parsed = [line.split(',')[:6] for line in klines]
         df = pd.DataFrame(parsed, columns=['date', 'open', 'close', 'high', 'low', 'vol'])
-        # 清理停牌或无效的破折号数据
+        
+        # 强力清理停牌造成的缺失数据 ('-')
         df = df[df['close'] != '-']
+        df.replace('-', '0', inplace=True)
         df = df.astype({'open': float, 'close': float, 'high': float, 'low': float, 'vol': float})
         return df
-    except:
+    except Exception as e:
         return None
 
 def get_aggregated_news():
@@ -65,29 +81,29 @@ def get_aggregated_news():
         news_texts = [f"- {item['title']}" for item in news_list]
         return "\n".join(news_texts) if news_texts else "暂无最新消息"
     except:
-        return "新闻接口暂时受限，请依赖 AI 自身的宏观时间戳知识。"
+        return "新闻接口受限，请依赖AI自身宏观认知。"
 
 # ================= 界面分栏设计 =================
 tab1, tab2 = st.tabs(["🎯 个股量化追踪与聪明钱", "🌍 宏观大盘与多智能体研判"])
 
+# ----------------- Tab 1: 个股量化追踪 -----------------
 with tab1:
     st.write("集成主力资金异动监控、量化支撑/压力位计算。")
-    symbol = st.text_input("请输入股票代码", placeholder="例如：600821 或 300059 (无需后缀)", key="stock_input")
+    symbol_input = st.text_input("请输入股票代码", placeholder="例如：000001 (平安银行)", key="stock_input")
 
     if st.button("开始深度量化分析"):
         if not api_key:
             st.error("❌ 未配置 GROQ_API_KEY")
-        elif not symbol.strip() or len(symbol.strip()) != 6:
+        elif not symbol_input.strip() or len(symbol_input.strip()) != 6:
             st.warning("⚠️ 请输入 6 位 A 股代码")
         else:
             with st.spinner("正在扫描行情、计算量化指标..."):
-                quote = get_realtime_quote(symbol)
-                df_kline = get_kline_data(symbol)
+                quote = get_realtime_quote(symbol_input)
+                df_kline = get_kline_data(symbol_input)
 
                 if quote and df_kline is not None and not df_kline.empty:
                     try:
                         name = quote['f58']
-                        # 防御性转换，应对停牌可能返回的非数字
                         price = float(quote.get('f43', 0)) / 100 if str(quote.get('f43')).replace('.','').isdigit() else 0.0
                         change_percent = float(quote.get('f170', 0)) / 100 if str(quote.get('f170')).replace('.','').replace('-','').isdigit() else 0.0
 
@@ -117,17 +133,18 @@ with tab1:
 
                         with st.spinner("Groq 正在生成个股研报..."):
                             client = Groq(api_key=api_key)
-                            prompt = f"你是量化分析师。股票{name}({symbol})现价{price}，涨幅{change_percent}%。资金流向：{smart_money_signal}。支撑位{support_level}，压力位{resistance_level}。请给出简短的进出场策略。中文回答。"
+                            prompt = f"你是量化分析师。股票{name}({symbol_input})现价{price}，涨幅{change_percent}%。资金流向：{smart_money_signal}。支撑位{support_level}，压力位{resistance_level}。请给出简短的进出场策略。中文回答。"
                             completion = client.chat.completions.create(
                                 messages=[{"role": "user", "content": prompt}],
                                 model="llama-3.3-70b-versatile"
                             )
                             st.info(completion.choices[0].message.content)
                     except Exception as e:
-                        st.error(f"处理数据时出错，可能是股票停牌或数据异常：{e}")
+                        st.error(f"处理数据时出错：{e}")
                 else:
-                    st.error("❌ 无法获取该股票数据。请确认代码是否正确，或该股票是否处于退市/停牌状态。")
+                    st.error("❌ 无法获取该股票数据。请确认代码无误或网络正常。")
 
+# ----------------- Tab 2: 宏观多智能体研判 -----------------
 with tab2:
     st.write("📊 联动核心指数与全网新闻样本，启动 5 大 AI 智能体进行宏观映射分析。")
 
@@ -136,12 +153,18 @@ with tab2:
             st.error("❌ 未配置 GROQ_API_KEY")
         else:
             with st.spinner("1. 正在抓取市场快照与全网热点样本..."):
-                indices = {"上证指数": "000001", "深证成指": "399001", "创业板指": "399006", "沪深300": "000300"}
+                # 直接使用带有市场前缀的 secid，与个股彻底区分
+                indices = {
+                    "上证指数": "1.000001", 
+                    "深证成指": "0.399001", 
+                    "创业板指": "0.399006", 
+                    "沪深300": "1.000300"
+                }
                 index_data_str = ""
                 cols = st.columns(4)
 
-                for idx, (name, code) in enumerate(indices.items()):
-                    quote = get_realtime_quote(code)
+                for idx, (name, secid) in enumerate(indices.items()):
+                    quote = get_realtime_quote(secid)
                     if quote:
                         price = float(quote.get('f43', 0)) / 100 if str(quote.get('f43')).replace('.','').isdigit() else 0.0
                         pct = float(quote.get('f170', 0)) / 100 if str(quote.get('f170')).replace('.','').replace('-','').isdigit() else 0.0
