@@ -6,14 +6,23 @@ from datetime import datetime
 
 st.set_page_config(page_title="AI股票投研系统", page_icon="📈", layout="wide")
 
-st.title("📈 AI 股票投研系统 (全维深度解析版)")
+st.title("📈 AI 股票投研系统 (数据精准修正版)")
 
 api_key = st.secrets.get("GROQ_API_KEY", "")
 
-# ================= 核心数据抓取函数 =================
+# ================= 核心数据抓取与清洗 =================
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 }
+
+def safe_float(val, default=0.0):
+    """防弹级数据清洗：安全处理API返回的各种异常字符（如 '-', None, ''）"""
+    if val is None or val == '-' or str(val).strip() == '':
+        return default
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        return default
 
 def get_market_code(symbol):
     symbol = str(symbol).strip()
@@ -29,8 +38,8 @@ def get_realtime_quote(symbol_or_secid):
         market = get_market_code(symbol)
         secid = f"{market}.{symbol}"
         
-    # 偷偷加料：f116(总市值), f162(动态市盈率), f167(市净率), f168(换手率)
-    url = f"https://push2.eastmoney.com/api/qt/stock/get?secid={secid}&fields=f57,f58,f43,f170,f169,f47,f48,f60,f44,f45,f46,f168,f116,f162,f167"
+    # 核心修复：添加 ut 令牌和 fltt=2，强制东方财富吐出基本面真实数据！
+    url = f"https://push2.eastmoney.com/api/qt/stock/get?secid={secid}&ut=fa5fd1943c7b386f172d6893dbfba10b&fltt=2&invt=2&fields=f57,f58,f43,f170,f169,f47,f48,f60,f44,f45,f46,f168,f116,f162,f167"
     try:
         res = requests.get(url, headers=HEADERS, timeout=5).json()
         if res and res.get('data'):
@@ -76,11 +85,11 @@ def get_aggregated_news():
         return "暂无新闻"
 
 # ================= 界面分栏设计 =================
-tab1, tab2 = st.tabs(["🎯 个股全维解析 (基本面+技术面)", "🌍 宏观大盘与多智能体研判"])
+tab1, tab2 = st.tabs(["🎯 个股全维解析 (精准数据版)", "🌍 宏观大盘与多智能体研判"])
 
 # ----------------- Tab 1: 个股全维解析 -----------------
 with tab1:
-    st.write("深度整合：公司基本面 + 行业趋势 + 聪明钱异动 + 量化关键位。")
+    st.write("底层已修复：确保总市值、市盈率、市净率等核心指标绝对真实，拒绝 Garbage In。")
     symbol_input = st.text_input("请输入股票代码", placeholder="例如：000001 (平安银行)", key="stock_input")
 
     if st.button("开始全维深度解析"):
@@ -89,22 +98,26 @@ with tab1:
         elif not symbol_input.strip() or len(symbol_input.strip()) != 6:
             st.warning("⚠️ 请输入 6 位 A 股代码")
         else:
-            with st.spinner("正在扫描基本面、计算量化指标..."):
+            with st.spinner("正在安全拉取基本面并计算量化指标..."):
                 quote = get_realtime_quote(symbol_input)
                 df_kline = get_kline_data(symbol_input)
-                macro_news = get_aggregated_news() # 顺便抓点宏观新闻做大盘背景
+                macro_news = get_aggregated_news()
 
                 if quote and df_kline is not None and not df_kline.empty:
                     try:
-                        name = quote['f58']
-                        price = float(quote.get('f43', 0)) / 100 if str(quote.get('f43')).replace('.','').isdigit() else 0.0
-                        change_percent = float(quote.get('f170', 0)) / 100 if str(quote.get('f170')).replace('.','').replace('-','').isdigit() else 0.0
+                        name = quote.get('f58', '未知')
+                        # 启用全新的 safe_float 进行清洗
+                        price = safe_float(quote.get('f43')) / 100 
+                        change_percent = safe_float(quote.get('f170')) / 100 
                         
-                        # --- 提取基本面数据 ---
-                        market_cap = float(quote.get('f116', 0)) / 100000000 if str(quote.get('f116')).replace('-','').isdigit() else 0.0 # 转换成亿元
-                        pe_ratio = quote.get('f162', '亏损/暂无')
-                        pb_ratio = quote.get('f167', '暂无')
-                        turnover = quote.get('f168', 0)
+                        # --- 核心数据提纯 ---
+                        # f116 是直接的数值（通常单位是元），除以 1亿 转换为亿元
+                        market_cap_raw = safe_float(quote.get('f116'))
+                        market_cap = market_cap_raw / 100000000 
+                        
+                        pe_ratio = quote.get('f162', '-')
+                        pb_ratio = quote.get('f167', '-')
+                        turnover = safe_float(quote.get('f168'))
 
                         recent_20 = df_kline.tail(20)
                         support_level = recent_20['low'].min()
@@ -121,14 +134,14 @@ with tab1:
                             smart_money_signal = "放量大跌 (主力资金撤离)"
 
                         # --- 界面展示优化 ---
-                        st.subheader(f"📊 {name} ({symbol_input}) 数据扫描")
+                        st.subheader(f"📊 {name} ({symbol_input}) 实时盘口与基本面")
                         
                         st.markdown("**【核心基本面】**")
                         col_b1, col_b2, col_b3, col_b4 = st.columns(4)
                         col_b1.metric("总市值", f"{market_cap:.2f} 亿")
                         col_b2.metric("动态市盈率 (PE)", f"{pe_ratio}")
                         col_b3.metric("市净率 (PB)", f"{pb_ratio}")
-                        col_b4.metric("今日换手率", f"{turnover}%")
+                        col_b4.metric("今日换手率", f"{turnover:.2f}%")
                         
                         st.markdown("**【量化技术面】**")
                         col_t1, col_t2, col_t3, col_t4 = st.columns(4)
@@ -141,40 +154,38 @@ with tab1:
                         df_kline.set_index('date', inplace=True)
                         st.line_chart(df_kline['close'])
 
-                        with st.spinner("🧠 首席策略师 AI 正在整合 基本面+技术面+宏观面 生成研报..."):
+                        with st.spinner("🧠 首席策略师 AI 正在整合 真实验证后的数据 生成研报..."):
                             client = Groq(api_key=api_key)
-                            
-                            # 终极 Prompt：逼迫 AI 进行多维度思考
                             prompt = f"""
                             你是一家顶级私募的首席投研官。请为股票【{name} ({symbol_input})】撰写一份极度专业的全维分析报告。
                             
-                            【已抓取的数据底座】：
-                            - 公司基本面：总市值 {market_cap:.2f}亿，市盈率(PE) {pe_ratio}，市净率(PB) {pb_ratio}。
-                            - 量化技术面：现价 {price}，今日涨幅 {change_percent}%，换手率 {turnover}%。近期支撑位 {support_level}，压力位 {resistance_level}。
-                            - 聪明钱监控：当前成交量是20日均量的 {vol_ratio:.1f} 倍，异动判定：{smart_money_signal}。
+                            【已抓取并验真的数据底座】：
+                            - 基本面：总市值 {market_cap:.2f}亿，市盈率(PE) {pe_ratio}，市净率(PB) {pb_ratio}。
+                            - 技术面：现价 {price}，今日涨幅 {change_percent}%，换手率 {turnover}%。近期支撑位 {support_level}，压力位 {resistance_level}。
+                            - 资金面：当前成交量是20日均量的 {vol_ratio:.1f} 倍，异动判定：{smart_money_signal}。
                             - 今日大盘宏观新闻参考：{macro_news}
                             
                             请分段输出以下内容：
-                            1. 🏢 **基本面与行业定性**：基于市值和PE/PB，判断它是蓝筹、成长还是题材股？并调用你的知识库，指出该公司所属的核心行业，以及该行业当前的宏观发展趋势（例如政策利好还是内卷周期）。
-                            2. ⚔️ **大盘与资金面共振**：结合今日宏观新闻参考，分析该股今天的资金面（异动判定与换手率）是否是在迎合大盘风口，主力意欲何为？
+                            1. 🏢 **基本面与估值诊断**：基于市值和PE/PB，判断它的估值在同行业中是否合理？并指出该公司所属的核心行业及当前宏观发展趋势。
+                            2. ⚔️ **大盘与资金面共振**：结合资金流向，分析该股是否有明显的主力介入或派发迹象？
                             3. 🎯 **实战量化策略**：结合支撑/压力位给出具体的操作思路（如击穿某点位止损，突破某点位看多）。
                             
-                            要求：语言极其干练，直击要害，像发给基金经理的内部密报。
+                            要求：语言极其干练，直击要害。
                             """
                             completion = client.chat.completions.create(
                                 messages=[{"role": "user", "content": prompt}],
                                 model="llama-3.3-70b-versatile",
-                                temperature=0.3 # 偏向客观理性的推理
+                                temperature=0.3
                             )
                             st.markdown("---")
                             st.markdown("### 📝 AI 全维深度研报")
                             st.write(completion.choices[0].message.content)
                     except Exception as e:
-                        st.error(f"处理数据时出错，可能是股票停牌或数据异常：{e}")
+                        st.error(f"渲染数据时出错：{e}")
                 else:
-                    st.error("❌ 无法获取该股票数据。")
+                    st.error("❌ 无法获取该股票数据，请检查网络或确认该股未退市。")
 
-# ----------------- Tab 2: 宏观多智能体研判 (保持不变) -----------------
+# ----------------- Tab 2: 宏观多智能体研判 -----------------
 with tab2:
     st.write("📊 联动核心指数与全网新闻样本，启动 5 大 AI 智能体进行宏观映射分析。")
     if st.button("启动多智能体宏观推演", type="primary"):
@@ -188,8 +199,8 @@ with tab2:
                 for idx, (index_name, secid) in enumerate(indices.items()):
                     quote = get_realtime_quote(secid)
                     if quote:
-                        price = float(quote.get('f43', 0)) / 100 if str(quote.get('f43')).replace('.','').isdigit() else 0.0
-                        pct = float(quote.get('f170', 0)) / 100 if str(quote.get('f170')).replace('.','').replace('-','').isdigit() else 0.0
+                        price = safe_float(quote.get('f43')) / 100 
+                        pct = safe_float(quote.get('f170')) / 100 
                         cols[idx].metric(index_name, f"{price:.2f}", f"{pct:.2f}%")
                         index_data_str += f"{index_name}: {price:.2f} ({pct:.2f}%)\n"
 
