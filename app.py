@@ -7,8 +7,6 @@ from urllib3.util.retry import Retry
 from bs4 import BeautifulSoup
 from datetime import datetime
 import re
-import json
-from urllib.parse import quote
 
 # ================= 页面配置 =================
 st.set_page_config(page_title="AI股票投研系统", page_icon="📈", layout="wide")
@@ -19,6 +17,12 @@ api_key = st.secrets.get("GROQ_API_KEY", "")
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 }
+
+# ================= 调试开关 =================
+with st.sidebar:
+    st.header("⚙️ 系统设置")
+    DEBUG_MODE = st.checkbox("显示调试信息", value=True)
+    st.caption("打开后会显示接口原始返回和错误信息，便于排查云端数据源问题。")
 
 # ================= 网络层优化 =================
 @st.cache_resource
@@ -46,22 +50,41 @@ def safe_float(val, default=0.0):
     except (ValueError, TypeError):
         return default
 
+def debug_show(title, obj):
+    if DEBUG_MODE:
+        with st.expander(f"🔍 调试信息：{title}", expanded=False):
+            st.write(obj)
+
 def safe_get_json(url, timeout=8):
     try:
         res = SESSION.get(url, timeout=timeout)
         res.raise_for_status()
-        return res.json()
-    except Exception:
+        data = res.json()
+        if DEBUG_MODE:
+            debug_show("JSON 请求成功", {
+                "url": url,
+                "status_code": res.status_code,
+                "data_preview": data if isinstance(data, dict) else str(data)[:1000]
+            })
+        return data
+    except Exception as e:
+        st.error(f"❌ 请求失败\nURL: {url}\n错误: {e}")
         return None
 
 def safe_get_text(url, timeout=8):
     try:
         res = SESSION.get(url, timeout=timeout)
         res.raise_for_status()
+        if DEBUG_MODE:
+            debug_show("TEXT 请求成功", {
+                "url": url,
+                "status_code": res.status_code,
+                "text_preview": res.text[:1500]
+            })
         return res.text
-    except Exception:
+    except Exception as e:
+        st.error(f"❌ 文本请求失败\nURL: {url}\n错误: {e}")
         return None
-
 
 # ================= 工具函数 =================
 def get_market_code(symbol):
@@ -89,7 +112,6 @@ def deduplicate_news_items(news_list):
             result.append(item)
     return result[:80]
 
-
 # ================= 行情 / K线 / 汇率 =================
 @st.cache_data(ttl=30)
 def get_realtime_quote(symbol_or_secid):
@@ -106,6 +128,9 @@ def get_realtime_quote(symbol_or_secid):
         f"&fields=f57,f58,f43,f170,f169,f47,f48,f60,f44,f45,f46,f168,f116,f162,f167"
     )
     res = safe_get_json(url)
+    if DEBUG_MODE:
+        debug_show("实时行情原始返回", res)
+
     if res and res.get("data"):
         return res["data"]
     return None
@@ -117,6 +142,9 @@ def get_forex_data():
         "secid=133.USDCNH&ut=fa5fd1943c7b386f172d6893dbfba10b&fltt=2&fields=f43,f170"
     )
     res = safe_get_json(url)
+    if DEBUG_MODE:
+        debug_show("汇率原始返回", res)
+
     if res and res.get("data"):
         return safe_float(res["data"].get("f43")), safe_float(res["data"].get("f170"))
     return None, None
@@ -136,6 +164,9 @@ def get_kline_data(symbol_or_secid, days=60):
         f"&fields1=f1,f2,f3,f4,f5&fields2=f51,f52,f53,f54,f55,f56,f57"
     )
     res = safe_get_json(url)
+    if DEBUG_MODE:
+        debug_show("K线原始返回", res)
+
     if not res or "data" not in res or not res["data"]:
         return None
 
@@ -149,7 +180,6 @@ def get_kline_data(symbol_or_secid, days=60):
     df.replace("-", "0", inplace=True)
     df = df.astype({"open": float, "close": float, "high": float, "low": float, "vol": float})
     return df
-
 
 # ================= 基础新闻 =================
 @st.cache_data(ttl=300)
@@ -171,17 +201,9 @@ def get_aggregated_news():
         )
     return result
 
-
 # ================= 热点聚合：stock-news.ws4.cn =================
 @st.cache_data(ttl=600)
 def get_ws4_hotspots():
-    """
-    说明：
-    - stock-news.ws4.cn 页面展示自己是“A股新闻流量监测系统”，
-      页面可见“热点排行榜”“受影响板块”“相关概念股”“详细分析”“置信度”等模块，
-      并写明“数据每30分钟更新”。
-    - 但未确认公开 API 文档，因此这里采用保守抓取策略：只抓页面文本中的热点标题线索。
-    """
     url = "https://stock-news.ws4.cn"
     html = safe_get_text(url)
     if not html:
@@ -190,7 +212,6 @@ def get_ws4_hotspots():
     soup = BeautifulSoup(html, "html.parser")
     text = soup.get_text("\n", strip=True)
 
-    # 尝试抓“热点排行榜”区域中的候选标题
     lines = [x.strip() for x in text.split("\n") if x.strip()]
     hotspot_candidates = []
     start = False
@@ -215,19 +236,18 @@ def get_ws4_hotspots():
         )
     return result
 
-
 # ================= 多平台热点监控（可插拔） =================
 @st.cache_data(ttl=600)
 def get_hotspot_news_multi_source():
     all_items = []
 
-    # 1) 站内公告 / 财经基础源
+    # 1) 基础源
     all_items.extend(get_aggregated_news())
 
-    # 2) stock-news.ws4.cn 聚合热点
+    # 2) 聚合热点源
     all_items.extend(get_ws4_hotspots())
 
-    # 3) 可扩展平台占位
+    # 3) 平台占位
     platform_keywords = [
         "百度热搜", "微博热搜", "东方财富", "财联社", "抖音热点", "B站热点",
         "雪球", "同花顺", "第一财经", "证券时报", "上证报", "中证报",
@@ -246,8 +266,7 @@ def get_hotspot_news_multi_source():
 
     return deduplicate_news_items(all_items)
 
-
-# ================= AI分析 =================
+# ================= AI 分析 =================
 def call_groq_analysis(prompt, model="llama-3.3-70b-versatile", temperature=0.3):
     client = Groq(api_key=api_key)
     completion = client.chat.completions.create(
@@ -292,7 +311,6 @@ def build_hotspot_report_prompt(news_items):
 - 明确区分“高确定性”和“高情绪性”热点
 """
 
-
 # ================= 页面布局 =================
 tab1, tab2, tab3 = st.tabs([
     "🎯 个股全维解析（含政策与外资）",
@@ -316,6 +334,12 @@ with tab1:
                 df_kline = get_kline_data(symbol_input)
                 base_news = get_aggregated_news()
                 cnh_price, cnh_pct = get_forex_data()
+
+            # 更明确的错误定位
+            if quote is None:
+                st.error("❌ 实时行情接口没有拿到数据。更可能是云端访问东财接口失败，不一定是股票本身有问题。")
+            if df_kline is None or df_kline.empty if df_kline is not None else True:
+                st.error("❌ K线接口没有拿到数据。更可能是云端访问东财历史行情接口失败。")
 
             if quote and df_kline is not None and not df_kline.empty:
                 try:
@@ -391,10 +415,9 @@ with tab1:
                         st.write(report)
 
                 except Exception as e:
-                    st.error(f"渲染数据时出错：{e}")
+                    st.error(f"❌ 渲染数据时出错：{e}")
             else:
-                st.error("❌ 无法获取该股票数据，请检查网络或确认该股未退市。")
-
+                st.info("ℹ️ 当前应用已经正常运行，但云端数据源没有返回有效股票数据。建议先打开左侧“显示调试信息”，再重试一次查看真实报错。")
 
 # ================= Tab2：宏观多智能体 =================
 with tab2:
@@ -422,12 +445,15 @@ with tab2:
                         pct = safe_float(quote.get("f170"))
                         cols[idx].metric(index_name, f"{price:.2f}", f"{pct:.2f}%")
                         index_data_str += f"{index_name}: {price:.2f} ({pct:.2f}%)\n"
+                    else:
+                        cols[idx].metric(index_name, "N/A", "N/A")
 
                 cnh_price, cnh_pct = get_forex_data()
                 if cnh_price:
                     cols[4].metric("美元/离岸人民币", f"{cnh_price:.4f}", f"{cnh_pct:.2f}%", delta_color="inverse")
                     cnh_text = f"美元/离岸人民币: {cnh_price:.4f} (涨跌幅: {cnh_pct:.2f}%)"
                 else:
+                    cols[4].metric("美元/离岸人民币", "N/A", "N/A")
                     cnh_text = "汇率数据暂未获取"
 
                 news_items = get_aggregated_news()
@@ -466,8 +492,7 @@ with tab2:
                     st.markdown("### 🧠 投研委员会宏观联合决策报告")
                     st.write(report)
                 except Exception as e:
-                    st.error(f"智能体推演失败: {e}")
-
+                    st.error(f"❌ 智能体推演失败: {e}")
 
 # ================= Tab3：20平台热点监控 =================
 with tab3:
@@ -494,4 +519,4 @@ with tab3:
                     st.write(report)
 
                 except Exception as e:
-                    st.error(f"热点分析失败：{e}")
+                    st.error(f"❌ 热点分析失败：{e}")
