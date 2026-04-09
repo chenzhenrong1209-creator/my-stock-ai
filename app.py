@@ -5,14 +5,16 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from bs4 import BeautifulSoup
-from datetime import datetime
+from datetime import datetime, timedelta
 import re
+import tushare as ts
 
 # ================= 页面配置 =================
 st.set_page_config(page_title="AI股票投研系统", page_icon="📈", layout="wide")
-st.title("📈 AI 股票投研系统 Pro（宏观 / 北向资金 / 热点监控）")
+st.title("📈 AI 股票投研系统 Pro（Tushare / 东财 / 热点监控）")
 
 api_key = st.secrets.get("GROQ_API_KEY", "")
+tushare_token = st.secrets.get("TUSHARE_TOKEN", "")
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
@@ -24,7 +26,12 @@ with st.sidebar:
     DEBUG_MODE = st.checkbox("显示调试信息", value=True)
     st.caption("打开后会显示接口原始返回和错误信息，便于排查云端数据源问题。")
 
-# ================= 网络层优化 =================
+    st.markdown("### 数据源优先级")
+    st.write("1. Tushare（日线/K线/指数）")
+    st.write("2. 东方财富（实时行情/备用K线）")
+    st.write("3. 热点聚合源")
+
+# ================= 网络层 =================
 @st.cache_resource
 def get_session():
     session = requests.Session()
@@ -86,6 +93,32 @@ def safe_get_text(url, timeout=8):
         st.error(f"❌ 文本请求失败\nURL: {url}\n错误: {e}")
         return None
 
+# ================= Tushare =================
+@st.cache_resource
+def get_tushare_pro():
+    if not tushare_token:
+        return None
+    try:
+        ts.set_token(tushare_token)
+        pro = ts.pro_api()
+        return pro
+    except Exception as e:
+        if DEBUG_MODE:
+            st.error(f"❌ Tushare 初始化失败：{e}")
+        return None
+
+PRO = get_tushare_pro()
+
+def to_ts_code(symbol: str) -> str:
+    symbol = str(symbol).strip()
+    if symbol.startswith(("6", "9", "5", "7")):
+        return f"{symbol}.SH"
+    return f"{symbol}.SZ"
+
+def is_index_code(symbol: str) -> bool:
+    symbol = str(symbol).strip()
+    return symbol.startswith(("000", "399", "880"))
+
 # ================= 工具函数 =================
 def get_market_code(symbol):
     symbol = str(symbol).strip()
@@ -93,13 +126,13 @@ def get_market_code(symbol):
         return "1"
     return "0"
 
-def normalize_news_item(title, source, url="", summary="", ts=""):
+def normalize_news_item(title, source, url="", summary="", ts_=""):
     return {
         "title": str(title).strip(),
         "source": str(source).strip(),
         "url": str(url).strip(),
         "summary": str(summary).strip(),
-        "timestamp": str(ts).strip()
+        "timestamp": str(ts_).strip()
     }
 
 def deduplicate_news_items(news_list):
@@ -112,7 +145,7 @@ def deduplicate_news_items(news_list):
             result.append(item)
     return result[:80]
 
-# ================= 行情 / K线 / 汇率 =================
+# ================= 东方财富实时行情 =================
 @st.cache_data(ttl=30)
 def get_realtime_quote(symbol_or_secid):
     symbol = str(symbol_or_secid).strip()
@@ -129,28 +162,80 @@ def get_realtime_quote(symbol_or_secid):
     )
     res = safe_get_json(url)
     if DEBUG_MODE:
-        debug_show("实时行情原始返回", res)
+        debug_show("东财实时行情原始返回", res)
 
     if res and res.get("data"):
         return res["data"]
     return None
 
+# ================= Tushare 日线 / 指数 =================
 @st.cache_data(ttl=300)
-def get_forex_data():
-    url = (
-        "https://push2.eastmoney.com/api/qt/stock/get?"
-        "secid=133.USDCNH&ut=fa5fd1943c7b386f172d6893dbfba10b&fltt=2&fields=f43,f170"
-    )
-    res = safe_get_json(url)
-    if DEBUG_MODE:
-        debug_show("汇率原始返回", res)
+def get_kline_data_tushare(symbol, days=60):
+    if PRO is None:
+        return None
 
-    if res and res.get("data"):
-        return safe_float(res["data"].get("f43")), safe_float(res["data"].get("f170"))
-    return None, None
+    try:
+        end_date = datetime.now().strftime("%Y%m%d")
+        start_date = (datetime.now() - timedelta(days=days * 3)).strftime("%Y%m%d")
+
+        ts_code = to_ts_code(symbol)
+
+        # 个股日线
+        df = PRO.daily(ts_code=ts_code, start_date=start_date, end_date=end_date)
+        if df is None or df.empty:
+            return None
+
+        # Tushare 默认倒序，改成升序
+        df = df.sort_values("trade_date").copy()
+        df.rename(columns={
+            "trade_date": "date",
+            "open": "open",
+            "close": "close",
+            "high": "high",
+            "low": "low",
+            "vol": "vol"
+        }, inplace=True)
+
+        df["date"] = pd.to_datetime(df["date"]).dt.strftime("%Y-%m-%d")
+        return df[["date", "open", "close", "high", "low", "vol"]].tail(days)
+
+    except Exception as e:
+        st.error(f"❌ Tushare 个股日线获取失败：{e}")
+        return None
 
 @st.cache_data(ttl=300)
-def get_kline_data(symbol_or_secid, days=60):
+def get_index_data_tushare(ts_code, days=60):
+    if PRO is None:
+        return None
+
+    try:
+        end_date = datetime.now().strftime("%Y%m%d")
+        start_date = (datetime.now() - timedelta(days=days * 3)).strftime("%Y%m%d")
+
+        df = PRO.index_daily(ts_code=ts_code, start_date=start_date, end_date=end_date)
+        if df is None or df.empty:
+            return None
+
+        df = df.sort_values("trade_date").copy()
+        df.rename(columns={
+            "trade_date": "date",
+            "open": "open",
+            "close": "close",
+            "high": "high",
+            "low": "low",
+            "vol": "vol"
+        }, inplace=True)
+
+        df["date"] = pd.to_datetime(df["date"]).dt.strftime("%Y-%m-%d")
+        return df[["date", "open", "close", "high", "low", "vol"]].tail(days)
+
+    except Exception as e:
+        st.error(f"❌ Tushare 指数日线获取失败：{e}")
+        return None
+
+# ================= 东方财富备用 K线 =================
+@st.cache_data(ttl=300)
+def get_kline_data_eastmoney(symbol_or_secid, days=60):
     symbol = str(symbol_or_secid).strip()
     if "." in symbol:
         secid = symbol
@@ -165,7 +250,7 @@ def get_kline_data(symbol_or_secid, days=60):
     )
     res = safe_get_json(url)
     if DEBUG_MODE:
-        debug_show("K线原始返回", res)
+        debug_show("东财 K线原始返回", res)
 
     if not res or "data" not in res or not res["data"]:
         return None
@@ -181,7 +266,46 @@ def get_kline_data(symbol_or_secid, days=60):
     df = df.astype({"open": float, "close": float, "high": float, "low": float, "vol": float})
     return df
 
-# ================= 基础新闻 =================
+# ================= 统一 K线入口 =================
+def get_kline_data(symbol_or_secid, days=60):
+    symbol = str(symbol_or_secid).strip()
+
+    # 1. 指数优先 Tushare index_daily
+    if "." in symbol and is_index_code(symbol.split(".")[-1]):
+        ts_code = "000001.SH" if symbol == "1.000001" else \
+                  "399001.SZ" if symbol == "0.399001" else \
+                  "399006.SZ" if symbol == "0.399006" else \
+                  "000300.SH" if symbol == "1.000300" else None
+        if ts_code:
+            df = get_index_data_tushare(ts_code, days=days)
+            if df is not None and not df.empty:
+                return df
+
+    # 2. 个股优先 Tushare
+    if "." not in symbol and len(symbol) == 6:
+        df = get_kline_data_tushare(symbol, days=days)
+        if df is not None and not df.empty:
+            return df
+
+    # 3. 回退东财
+    return get_kline_data_eastmoney(symbol_or_secid, days=days)
+
+# ================= 汇率 =================
+@st.cache_data(ttl=300)
+def get_forex_data():
+    url = (
+        "https://push2.eastmoney.com/api/qt/stock/get?"
+        "secid=133.USDCNH&ut=fa5fd1943c7b386f172d6893dbfba10b&fltt=2&fields=f43,f170"
+    )
+    res = safe_get_json(url)
+    if DEBUG_MODE:
+        debug_show("汇率原始返回", res)
+
+    if res and res.get("data"):
+        return safe_float(res["data"].get("f43")), safe_float(res["data"].get("f170"))
+    return None, None
+
+# ================= 新闻 =================
 @st.cache_data(ttl=300)
 def get_aggregated_news():
     url = "https://np-anotice-stock.eastmoney.com/api/security/ann?page_size=8&page_index=1&ann_type=A"
@@ -201,7 +325,6 @@ def get_aggregated_news():
         )
     return result
 
-# ================= 热点聚合：stock-news.ws4.cn =================
 @st.cache_data(ttl=600)
 def get_ws4_hotspots():
     url = "https://stock-news.ws4.cn"
@@ -236,18 +359,12 @@ def get_ws4_hotspots():
         )
     return result
 
-# ================= 多平台热点监控（可插拔） =================
 @st.cache_data(ttl=600)
 def get_hotspot_news_multi_source():
     all_items = []
-
-    # 1) 基础源
     all_items.extend(get_aggregated_news())
-
-    # 2) 聚合热点源
     all_items.extend(get_ws4_hotspots())
 
-    # 3) 平台占位
     platform_keywords = [
         "百度热搜", "微博热搜", "东方财富", "财联社", "抖音热点", "B站热点",
         "雪球", "同花顺", "第一财经", "证券时报", "上证报", "中证报",
@@ -318,10 +435,10 @@ tab1, tab2, tab3 = st.tabs([
     "🔥 20平台热点监控与A股映射"
 ])
 
-# ================= Tab1：个股全维解析 =================
+# ================= Tab1 =================
 with tab1:
     st.write("深度整合：基本面 + 政策解读 + 美联储宏观影响 + 北向资金偏好。")
-    symbol_input = st.text_input("请输入股票代码", placeholder="例如：000001 (平安银行)", key="stock_input")
+    symbol_input = st.text_input("请输入股票代码", placeholder="例如：600276", key="stock_input")
 
     if st.button("开始全维深度解析"):
         if not api_key:
@@ -335,11 +452,10 @@ with tab1:
                 base_news = get_aggregated_news()
                 cnh_price, cnh_pct = get_forex_data()
 
-            # 更明确的错误定位
             if quote is None:
-                st.error("❌ 实时行情接口没有拿到数据。更可能是云端访问东财接口失败，不一定是股票本身有问题。")
-            if df_kline is None or df_kline.empty if df_kline is not None else True:
-                st.error("❌ K线接口没有拿到数据。更可能是云端访问东财历史行情接口失败。")
+                st.error("❌ 实时行情接口没有拿到数据。")
+            if df_kline is None or (df_kline is not None and df_kline.empty):
+                st.error("❌ 日线/K线接口没有拿到数据。当前已优先尝试 Tushare，再回退东财。")
 
             if quote and df_kline is not None and not df_kline.empty:
                 try:
@@ -417,9 +533,9 @@ with tab1:
                 except Exception as e:
                     st.error(f"❌ 渲染数据时出错：{e}")
             else:
-                st.info("ℹ️ 当前应用已经正常运行，但云端数据源没有返回有效股票数据。建议先打开左侧“显示调试信息”，再重试一次查看真实报错。")
+                st.info("ℹ️ 应用已正常运行，但当前数据源没有返回有效个股数据。建议补充 TUSHARE_TOKEN，提高稳定性。")
 
-# ================= Tab2：宏观多智能体 =================
+# ================= Tab2 =================
 with tab2:
     st.write("📊 联动核心指数、外汇市场与新闻样本，启动多智能体进行宏观映射分析。")
 
@@ -428,25 +544,37 @@ with tab2:
             st.error("❌ 未配置 GROQ_API_KEY")
         else:
             with st.spinner("正在抓取大盘快照、外汇波动与新闻样本..."):
-                indices = {
-                    "上证指数": "1.000001",
-                    "深证成指": "0.399001",
-                    "创业板指": "0.399006",
-                    "沪深300": "1.000300"
+                index_map = {
+                    "上证指数": ("1.000001", "000001.SH"),
+                    "深证成指": ("0.399001", "399001.SZ"),
+                    "创业板指": ("0.399006", "399006.SZ"),
+                    "沪深300": ("1.000300", "000300.SH")
                 }
 
                 index_data_str = ""
                 cols = st.columns(5)
 
-                for idx, (index_name, secid) in enumerate(indices.items()):
-                    quote = get_realtime_quote(secid)
-                    if quote:
-                        price = safe_float(quote.get("f43"))
-                        pct = safe_float(quote.get("f170"))
+                for idx, (index_name, pair_codes) in enumerate(index_map.items()):
+                    em_code, ts_code = pair_codes
+
+                    # 指数先尝试 Tushare K线推导现价，再回退东财
+                    idx_df = get_index_data_tushare(ts_code, days=5)
+                    if idx_df is not None and not idx_df.empty:
+                        latest = idx_df.iloc[-1]
+                        prev = idx_df.iloc[-2] if len(idx_df) >= 2 else latest
+                        price = safe_float(latest["close"])
+                        pct = ((safe_float(latest["close"]) - safe_float(prev["close"])) / safe_float(prev["close"]) * 100) if safe_float(prev["close"]) > 0 else 0
                         cols[idx].metric(index_name, f"{price:.2f}", f"{pct:.2f}%")
                         index_data_str += f"{index_name}: {price:.2f} ({pct:.2f}%)\n"
                     else:
-                        cols[idx].metric(index_name, "N/A", "N/A")
+                        quote = get_realtime_quote(em_code)
+                        if quote:
+                            price = safe_float(quote.get("f43"))
+                            pct = safe_float(quote.get("f170"))
+                            cols[idx].metric(index_name, f"{price:.2f}", f"{pct:.2f}%")
+                            index_data_str += f"{index_name}: {price:.2f} ({pct:.2f}%)\n"
+                        else:
+                            cols[idx].metric(index_name, "N/A", "N/A")
 
                 cnh_price, cnh_pct = get_forex_data()
                 if cnh_price:
@@ -494,7 +622,7 @@ with tab2:
                 except Exception as e:
                     st.error(f"❌ 智能体推演失败: {e}")
 
-# ================= Tab3：20平台热点监控 =================
+# ================= Tab3 =================
 with tab3:
     st.write("实时监控热点聚合源，并由 AI 分析其对 A 股板块与个股的影响。")
 
