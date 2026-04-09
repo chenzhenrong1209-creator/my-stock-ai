@@ -647,4 +647,4 @@ with tab3:
                     st.write(report)
 
                 except Exception as e:
-                    st.error(f"❌ 热点分析失败：{e}
+                    st.error(f"❌ 热点分析失败：{e}")
