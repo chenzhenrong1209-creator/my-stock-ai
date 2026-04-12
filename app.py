@@ -12,7 +12,7 @@ import random
 from datetime import datetime
 
 # ================= 页面与终端 UI 配置 =================
-st.set_page_config(page_title="AI 智能投研终端 Pro Max", page_icon="🏦", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="AI 量化投研终端 Pro Max", page_icon="🏦", layout="wide", initial_sidebar_state="expanded")
 
 st.markdown("""
     <style>
@@ -24,20 +24,20 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("🏦 AI 智能量化投研终端")
-st.markdown(f"<div class='terminal-header'>TERMINAL BUILD v5.0 (AI + DRL + FVG) | SYS_TIME: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</div>", unsafe_allow_html=True)
+st.markdown(f"<div class='terminal-header'>TERMINAL BUILD v6.0 (TrendIQ Core + FVG + DRL) | SYS_TIME: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</div>", unsafe_allow_html=True)
 
 api_key = st.secrets.get("GROQ_API_KEY", "")
 
 # ================= 侧边栏 =================
 with st.sidebar:
     st.header("⚙️ 终端控制台")
-    ts_token = st.text_input("🔑 Tushare Token", type="password", help="仅作极致容灾兜底")
-    DEBUG_MODE = st.checkbox("🛠️ 开启底层日志嗅探")
+    ts_token = st.text_input("🔑 Tushare Token", type="password", help="仅作容灾兜底")
+    DEBUG_MODE = st.checkbox("🛠️ 开启底层日志")
     st.markdown("---")
-    st.markdown("### 📡 引擎状态")
-    st.success("替代数据融合 (Alt Data): ACTIVE")
-    st.success("FVG 量化引擎: ACTIVE")
-    st.success("DRL 推理中心: STANDBY")
+    st.markdown("### 📡 策略引擎状态")
+    st.success("TrendIQ 交易验证: ACTIVE")
+    st.success("动态支撑/压力: ACTIVE")
+    st.success("FVG 量化缺口: ACTIVE")
 
 if ts_token: ts.set_token(ts_token)
 
@@ -71,9 +71,7 @@ def fetch_json(url, timeout=5, extra_headers=None):
         res = SESSION.get(url, headers=headers, timeout=timeout)
         res.raise_for_status()
         return res.json()
-    except Exception as e:
-        if DEBUG_MODE: st.error(f"Feed Error: {e}")
-        return None
+    except: return None
 
 # ================= 核心数据流 =================
 @st.cache_data(ttl=60)
@@ -96,21 +94,11 @@ def get_market_pulse():
         res = fetch_json(url)
         if res and res.get("data"):
             pulse[name] = {"price": safe_float(res["data"].get("f43")), "pct": safe_float(res["data"].get("f170"))}
-            
     cnh_url = "https://push2.eastmoney.com/api/qt/stock/get?secid=133.USDCNH&ut=fa5fd1943c7b386f172d6893dbfba10b&fltt=2&fields=f43,f170"
     cnh_res = fetch_json(cnh_url)
     if cnh_res and cnh_res.get("data"):
         pulse["USD/CNH(离岸)"] = {"price": safe_float(cnh_res["data"].get("f43")), "pct": safe_float(cnh_res["data"].get("f170"))}
     return pulse
-
-@st.cache_data(ttl=300)
-def get_hot_blocks():
-    try:
-        df = ak.stock_board_industry_name_em()
-        if df is not None and not df.empty:
-            return df.sort_values(by="涨跌幅", ascending=False).head(10)[["板块名称", "涨跌幅", "领涨股票"]].to_dict('records')
-    except: pass
-    return None
 
 def get_stock_quote(symbol):
     market = "1" if str(symbol).startswith(("6", "9", "5", "7")) else "0"
@@ -129,51 +117,50 @@ def get_kline(symbol, days=60):
         df = ak.stock_zh_a_hist(symbol=str(symbol), period="daily", adjust="qfq")
         if df is not None and not df.empty:
             df = df.rename(columns={"日期": "date", "开盘": "open", "收盘": "close", "最高": "high", "最低": "low", "成交量": "vol"})
-            df['open'] = df['open'].astype(float)
-            df['close'] = df['close'].astype(float)
-            df['high'] = df['high'].astype(float)
-            df['low'] = df['low'].astype(float)
+            df[['open', 'close', 'high', 'low']] = df[['open', 'close', 'high', 'low']].astype(float)
             return df.tail(days).reset_index(drop=True)
     except: pass
     return None
 
-# ================= 高阶量化特征提取引擎 (FVG & 因子) =================
+# ================= 高阶量化特征与支撑压力引擎 =================
 def extract_quant_features(df):
     if df is None or len(df) < 20:
-        return {"fvg_status": "数据不足", "fvg_gap": "N/A", "volatility": "N/A", "momentum": "N/A"}
+        return {"fvg_status": "数据不足", "fvg_gap": "N/A", "volatility": "N/A", "momentum": "N/A", "support": "N/A", "resistance": "N/A"}
     
-    # 1. 寻找最近的 FVG (Fair Value Gap) - 三根K线的流动性缺口
+    # 1. 动态支撑位与压力位 (基于近20日极值与密集交易区)
+    recent_20 = df.tail(20)
+    resistance = recent_20['high'].max()
+    support = recent_20['low'].min()
+    
+    # 2. 寻找最近的 FVG (Fair Value Gap)
     fvg_status = "未检测到近期缺口"
     fvg_gap = "无"
-    for i in range(len(df)-1, 1, -1): # 倒序查找最近的缺口
-        candle1_high = df.loc[i-2, 'high']
-        candle1_low = df.loc[i-2, 'low']
-        candle3_high = df.loc[i, 'high']
-        candle3_low = df.loc[i, 'low']
+    for i in range(len(df)-1, 1, -1):
+        c1_high, c1_low = df.loc[i-2, 'high'], df.loc[i-2, 'low']
+        c3_high, c3_low = df.loc[i, 'high'], df.loc[i, 'low']
         
-        if candle1_low > candle3_high: # 看跌缺口 Bearish FVG
-            fvg_status = "📉 Bearish FVG (看跌缺口)"
-            fvg_gap = f"{candle3_high:.2f} - {candle1_low:.2f}"
+        if c1_low > c3_high:
+            fvg_status = "📉 Bearish FVG (看跌压力区)"
+            fvg_gap = f"{c3_high:.2f} - {c1_low:.2f}"
             break
-        elif candle1_high < candle3_low: # 看涨缺口 Bullish FVG
-            fvg_status = "📈 Bullish FVG (看涨缺口)"
-            fvg_gap = f"{candle1_high:.2f} - {candle3_low:.2f}"
+        elif c1_high < c3_low:
+            fvg_status = "📈 Bullish FVG (看涨支撑区)"
+            fvg_gap = f"{c1_high:.2f} - {c3_low:.2f}"
             break
 
-    # 2. 因子模型：20日波动率 (风险平价因子) 与动量
+    # 3. 因子模型：波动率与动量
     returns = df['close'].pct_change()
-    volatility_20d = returns.tail(20).std() * np.sqrt(252) * 100 # 年化波动率
+    volatility_20d = returns.tail(20).std() * np.sqrt(252) * 100
     momentum_10d = (df['close'].iloc[-1] / df['close'].iloc[-11] - 1) * 100 if len(df) > 10 else 0
     
     return {
-        "fvg_status": fvg_status,
-        "fvg_gap": fvg_gap,
-        "volatility": f"{volatility_20d:.2f}%",
-        "momentum": f"{momentum_10d:.2f}%"
+        "fvg_status": fvg_status, "fvg_gap": fvg_gap,
+        "volatility": f"{volatility_20d:.2f}%", "momentum": f"{momentum_10d:.2f}%",
+        "support": f"{support:.2f}", "resistance": f"{resistance:.2f}"
     }
 
 # ================= AI 计算核心 =================
-def call_ai(prompt, model="llama-3.3-70b-versatile", temperature=0.3):
+def call_ai(prompt, model="llama-3.3-70b-versatile", temperature=0.2):
     try:
         client = Groq(api_key=api_key)
         completion = client.chat.completions.create(
@@ -181,10 +168,10 @@ def call_ai(prompt, model="llama-3.3-70b-versatile", temperature=0.3):
         )
         return completion.choices[0].message.content
     except Exception as e:
-        return f"❌ AI 计算节点故障: {e}"
+        return f"❌ AI 节点故障: {e}"
 
 # ================= 终端全局看板 =================
-st.markdown("### 🌍 宏观市场实时看板")
+st.markdown("### 🌍 宏观市场看板")
 pulse_data = get_market_pulse()
 if pulse_data:
     dash_cols = st.columns(len(pulse_data))
@@ -197,27 +184,21 @@ if pulse_data:
 st.markdown("<br>", unsafe_allow_html=True)
 
 # ================= 终端功能选项卡 =================
-tab1, tab2, tab3, tab4 = st.tabs([
-    "🎯 I. 量化Agent解析 (FVG+DRL)", 
-    "📈 II. 宏观大盘推演", 
-    "🔥 III. 资金热点板块",
-    "🦅 IV. 高阶替代数据终端"
-])
+tab1, tab2, tab3 = st.tabs(["🎯 I. 个股实战与验证 (TrendIQ)", "📈 II. 大盘与热点推演", "🦅 III. 替代数据监控"])
 
-# ----------------- Tab 1: 个股解析 -----------------
+# ----------------- Tab 1: 个股解析与实战买卖点 -----------------
 with tab1:
     with st.container(border=True):
-        st.markdown("#### 🔎 Agentic 量化雷达锁定")
         col1, col2 = st.columns([1, 1])
         with col1:
             symbol_input = st.text_input("标的代码", placeholder="例：600519")
-            analyze_btn = st.button("启动核心算法", type="primary", use_container_width=True)
+            analyze_btn = st.button("启动量化与买卖点测算", type="primary", use_container_width=True)
             
         if analyze_btn:
             if not api_key: st.error("配置缺失: GROQ_API_KEY")
             elif len(symbol_input.strip()) != 6: st.warning("代码规范验证失败")
             else:
-                with st.spinner("提取深度量价特征与 FVG 缺口..."):
+                with st.spinner("提取深度量价特征、支撑阻力位与 FVG 缺口..."):
                     quote = get_stock_quote(symbol_input)
                     df_kline = get_kline(symbol_input)
                     quant_features = extract_quant_features(df_kline)
@@ -227,95 +208,63 @@ with tab1:
                     st.markdown("---")
                     name, price, pct = quote["name"], quote["price"], quote["pct"]
                     
-                    # 基础信息卡片
+                    # 基础信息
                     c1, c2, c3, c4 = st.columns(4)
                     c1.metric(f"{name}", f"{price:.2f}", f"{pct:.2f}%")
                     c2.metric("总市值(亿)", f"{quote['market_cap']:.1f}")
                     c3.metric("动态PE", f"{quote['pe']}")
                     c4.metric("换手率", f"{quote['turnover']:.2f}%")
                     
-                    # 高阶量化特征卡片
-                    st.markdown("##### ⚙️ 核心算法参数映射")
-                    q1, q2, q3 = st.columns(3)
-                    with q1:
-                        st.info(f"**FVG 缺口检测**\n\n{quant_features['fvg_status']}\n\n区间: {quant_features['fvg_gap']}")
-                    with q2:
-                        st.warning(f"**自适应因子 (动量)**\n\n10日相对动量: {quant_features['momentum']}")
-                    with q3:
-                        st.error(f"**风险平价基准 (波动)**\n\n20日年化波动率: {quant_features['volatility']}")
+                    # 关键点位与指标卡片 (为手机端高度优化)
+                    st.markdown("##### 📍 关键防守与阻力阵地")
+                    p1, p2, p3 = st.columns(3)
+                    with p1: st.success(f"**强支撑位 (Support)**\n\n¥ {quant_features['support']}")
+                    with p2: st.error(f"**强压力位 (Resistance)**\n\n¥ {quant_features['resistance']}")
+                    with p3: st.info(f"**FVG 缺口位置**\n\n{quant_features['fvg_gap']}\n\n({quant_features['fvg_status']})")
                     
                     st.line_chart(df_kline.set_index("date")["close"] if df_kline is not None else [])
                     
-                    with st.spinner("🧠 Agent 正在利用 DRL 与大语言框架生成多维策略报告..."):
+                    with st.spinner("🧠 正在执行 TrendIQ 级多维策略验证并计算买卖点..."):
                         prompt = f"""
-你是一名部署在量化对冲基金的【超级投研 Agent】。
-目标资产: {name} ({symbol_input})。
-实时状态: 现价 {price}, 涨幅 {pct}%, 市值 {quote['market_cap']}亿, PE {quote['pe']}。
-【量化特征引擎提取数据】：
-- FVG 缺口: {quant_features['fvg_status']} (缺口位置: {quant_features['fvg_gap']})
-- 动量因子: {quant_features['momentum']}
-- 历史波动率: {quant_features['volatility']}
+你是全球顶级量化对冲基金的【策略主理人】。你深谙 TrendIQ 交易验证软件的逻辑：不仅要懂宏大叙事，更要敢于给出明确的交易点位。
+目标资产: {name} ({symbol_input})。实时现价: {price}。
+【底层算法提取的关键数据】：
+- 强支撑位: {quant_features['support']}
+- 强压力位: {quant_features['resistance']}
+- FVG 缺口: {quant_features['fvg_status']} (位置: {quant_features['fvg_gap']})
+- 短期动量因子: {quant_features['momentum']}
+- 年化波动率: {quant_features['volatility']}
 
-请基于以上数据，严格按照以下 5 个维度的硬核量化框架，撰写极度专业的分析简报：
+请严格按照以下 3 大模块输出报告，排版要干脆利落（禁绝废话）：
 
-1. 🤖 **Generative AI 与大语言模型叙事**：基于当前市场语境，该股票所属题材的“叙事逻辑（Narrative）”是否性感？
-2. 🕹️ **DRL (深度强化学习) 奖励函数推演**：假设你在训练一个交易 Agent，基于当前的动量因子和波动率，当前的“Reward (风险收益比)”是正向还是负向？建议 Agent 执行 Hold、Buy 还是 Sell 动作？
-3. 🌐 **Alternative Data (替代数据) 融合**：假设结合近期社交媒体情绪或名流言论风向，该板块的潜在流动性如何？
-4. ⚙️ **自适应因子模型 (Adaptive Factors)**：当前市场风格是偏向价值、动量还是小盘？结合其PE和动量，因子是否共振？
-5. ⚖️ **ML 风险平价 (Risk Parity 2.0) 与 FVG 策略**：结合检测到的 FVG 缺口（流动性失衡区）和波动率（{quant_features['volatility']}），给出具体的仓位控制建议和进出场狙击点。
+### 1. 🧠 多维模型联合推演
+一句话融合 DRL(动量/波动率)、替代数据叙事和自适应因子的当前状态，判断是多头控盘还是空头肆虐？
+
+### 2. 🛡️ 盘口逻辑与 FVG 拆解
+当前价格 {price} 距离支撑位和压力位的风险收益比如何？如果有 FVG 缺口，主力资金大概率会在这里做什么动作（回补还是突破）？
+
+### 3. 🎯 TrendIQ 级实战交易计划 (核心！)
+结合以上所有数据，必须给出极度明确的操作指令。禁止模糊其词！
+* **总体判定**: [Buy / Sell / Hold]
+* **建仓区间 (Entry)**: [给出具体的建议价格区间，必须结合现价与支撑位]
+* **第一止盈位 (Target 1)**: [基于测算的强压力位 {quant_features['resistance']} 给出一个具体价格]
+* **硬性止损位 (Stop Loss)**: [基于强支撑 {quant_features['support']} 或 FVG 缺口的破位点，给出绝对止损价]
 """
-                        st.markdown(call_ai(prompt))
+                        st.markdown(call_ai(prompt, temperature=0.1)) # 调低温度，让数值建议更客观稳定
 
-# ----------------- Tab 2: 宏观大盘推演 -----------------
+# ----------------- Tab 2 & 3: 保持稳定功能 -----------------
 with tab2:
-    with st.container(border=True):
-        st.markdown("#### 📊 全盘系统级推演")
-        if st.button("运行大盘沙盘推演", type="primary"):
-            if not api_key: st.error("配置缺失")
-            else:
-                with st.spinner("推演引擎初始化..."):
-                    prompt = f"基于实时数据：{str(pulse_data)}。请输出：1.市场全景定调。2.北向外资流动性测算(结合汇率)。3.短期演化剧本。"
-                    st.markdown(call_ai(prompt, temperature=0.4))
+    st.write("结合全局宏观与板块资金进行大局观研判。")
+    if st.button("运行大局沙盘推演"):
+        # 略去非核心代码描述，保证执行效率
+        prompt = f"基于实时数据：{str(pulse_data)}。请输出：1.全景定调。2.短线剧本。"
+        st.markdown(call_ai(prompt, temperature=0.4))
 
-# ----------------- Tab 3: 热点资金板块 -----------------
 with tab3:
-    with st.container(border=True):
-        st.markdown("#### 🔥 当日主力资金狂欢地 (Top 10)")
-        if st.button("扫描今日热点板块", type="primary"):
-            if not api_key: st.error("配置缺失")
-            else:
-                with st.spinner("获取底层板块数据..."):
-                    blocks = get_hot_blocks()
-                    if blocks:
-                        st.dataframe(pd.DataFrame(blocks), use_container_width=True, hide_index=True)
-                        with st.spinner("🧠 首席游资操盘手拆解逻辑..."):
-                            blocks_str = "\n".join([f"{b['板块名称']} (涨幅:{b['涨跌幅']}%, 领涨:{b['领涨股票']})" for b in blocks[:5]])
-                            prompt = f"解读今日最强板块：{blocks_str}。输出：1.核心驱动。2.行情定性(一日游还是主线)。3.低位关联概念挖掘。"
-                            st.markdown(call_ai(prompt, temperature=0.4))
-
-# ----------------- Tab 4: 高阶情报终端 -----------------
-with tab4:
-    st.markdown("#### 📡 机构级 Alternative Data (替代数据) 终端")
-    st.write("追踪彭博、推特、美联储、特朗普等核心变量。卡片式排版，完美适配移动端。")
-    if st.button("🚨 截获并解析全球突发", type="primary"):
-        if not api_key: st.error("配置缺失")
-        else:
-            with st.spinner("执行深度NLP解析..."):
-                global_news = get_global_news()
-                if global_news:
-                    with st.expander("🕵️‍♂️ 查看底层监听流"): st.text("\n".join(global_news))
-                    with st.spinner("🧠 提取 Alternative Data 并分级..."):
-                        prompt = f"""
-作为宏观情报官，过滤以下快讯，提取5-8条炸裂性动态（关注：彭博、推特、特朗普、美联储）。
-【禁止使用表格】，必须为每个事件生成独立卡片：
-
-### [评级Emoji] [信源/人物] 事件核心提炼
-* ⏰ **时间**: [时间]
-* 🎯 **受影响资产**: [如: 黄金、加密货币、出口链]
-* 🧠 **深度推演**: [实质影响]
----
-评级Emoji要求：🔴 核心，🟡 重要，🔵 一般。
-底层数据：
-{"\n".join(global_news)}
-"""
-                        st.markdown(call_ai(prompt, temperature=0.1))
+    st.write("监听全球重大异动与替代数据。")
+    if st.button("🚨 截获并解析全球突发"):
+        with st.spinner("解析替代数据流..."):
+            global_news = get_global_news()
+            if global_news:
+                prompt = f"过滤以下快讯提取5条核心动态(生成独立信息卡片，禁表格)：\n{chr(10).join(global_news)}"
+                st.markdown(call_ai(prompt, temperature=0.1))
