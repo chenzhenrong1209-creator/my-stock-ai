@@ -1,7 +1,6 @@
 import streamlit as st
 from groq import Groq
 import pandas as pd
-import numpy as np
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -12,40 +11,63 @@ import random
 from datetime import datetime
 
 # ================= 页面与终端 UI 配置 =================
-st.set_page_config(page_title="AI 量化投研终端 Pro Max", page_icon="🏦", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="AI 智能投研终端 Pro Max", page_icon="🏦", layout="wide", initial_sidebar_state="expanded")
 
+# 注入金融风自定义 CSS，优化移动端显示
 st.markdown("""
     <style>
-    .stTabs [data-baseweb="tab-list"] { gap: 10px; flex-wrap: wrap; }
-    .stTabs [data-baseweb="tab"] { height: auto; min-height: 40px; white-space: normal; background-color: transparent; border-radius: 4px 4px 0 0; padding: 8px 12px; font-weight: bold; }
-    .terminal-header { font-family: 'Courier New', Courier, monospace; color: #888; font-size: 0.8em; margin-bottom: 20px; word-wrap: break-word; }
-    [data-testid="stMetricValue"] { font-size: 1.5rem; }
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 10px;
+        flex-wrap: wrap; /* 允许在手机端换行 */
+    }
+    .stTabs [data-baseweb="tab"] {
+        height: auto;
+        min-height: 40px;
+        white-space: normal; /* 允许文字换行 */
+        background-color: transparent;
+        border-radius: 4px 4px 0 0;
+        padding: 8px 12px;
+        font-weight: bold;
+    }
+    .terminal-header {
+        font-family: 'Courier New', Courier, monospace;
+        color: #888;
+        font-size: 0.8em;
+        margin-bottom: 20px;
+        word-wrap: break-word;
+    }
+    /* 优化手机端指标卡片间距 */
+    [data-testid="stMetricValue"] {
+        font-size: 1.5rem; 
+    }
     </style>
 """, unsafe_allow_html=True)
 
 st.title("🏦 AI 智能量化投研终端")
-st.markdown(f"<div class='terminal-header'>TERMINAL BUILD v6.0 (TrendIQ Core + FVG + DRL) | SYS_TIME: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</div>", unsafe_allow_html=True)
+st.markdown(f"<div class='terminal-header'>TERMINAL BUILD v4.1.0 | SYS_TIME: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | MOBILE OPTIMIZED</div>", unsafe_allow_html=True)
 
 api_key = st.secrets.get("GROQ_API_KEY", "")
 
 # ================= 侧边栏 =================
 with st.sidebar:
     st.header("⚙️ 终端控制台")
-    ts_token = st.text_input("🔑 Tushare Token", type="password", help="仅作容灾兜底")
-    DEBUG_MODE = st.checkbox("🛠️ 开启底层日志")
+    ts_token = st.text_input("🔑 Tushare Token", type="password", help="仅作极致容灾兜底")
+    DEBUG_MODE = st.checkbox("🛠️ 开启底层日志嗅探")
     st.markdown("---")
-    st.markdown("### 📡 策略引擎状态")
-    st.success("TrendIQ 交易验证: ACTIVE")
-    st.success("动态支撑/压力: ACTIVE")
-    st.success("FVG 量化缺口: ACTIVE")
+    st.markdown("### 📡 数据连通性")
+    st.success("行情引流: ACTIVE")
+    st.success("7x24快讯: ACTIVE")
+    st.success("板块扫描: ACTIVE")
 
-if ts_token: ts.set_token(ts_token)
+if ts_token:
+    ts.set_token(ts_token)
 
-# ================= 网络底座 =================
+# ================= 网络底座 (强力抗封) =================
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-    "Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Mobile Safari/537.36"
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:115.0) Gecko/20100101 Firefox/115.0",
+    "Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Mobile Safari/537.36" # 增加移动端UA
 ]
 
 @st.cache_resource
@@ -71,11 +93,15 @@ def fetch_json(url, timeout=5, extra_headers=None):
         res = SESSION.get(url, headers=headers, timeout=timeout)
         res.raise_for_status()
         return res.json()
-    except: return None
+    except Exception as e:
+        if DEBUG_MODE: st.error(f"Feed Error: {e}")
+        return None
 
 # ================= 核心数据流 =================
+
 @st.cache_data(ttl=60)
 def get_global_news():
+    """全球7x24小时事件嗅探"""
     url = "https://zhibo.sina.com.cn/api/zhibo/feed?page=1&page_size=60&zhibo_id=152&tag_id=0&dire=f&dpc=1"
     res = fetch_json(url, extra_headers={"Referer": "https://finance.sina.com.cn/"})
     news = []
@@ -87,6 +113,7 @@ def get_global_news():
 
 @st.cache_data(ttl=60)
 def get_market_pulse():
+    """获取宏观三大指数及外汇"""
     pulse = {}
     indices = {"上证指数": "1.000001", "深证成指": "0.399001", "创业板指": "0.399006"}
     for name, code in indices.items():
@@ -94,21 +121,39 @@ def get_market_pulse():
         res = fetch_json(url)
         if res and res.get("data"):
             pulse[name] = {"price": safe_float(res["data"].get("f43")), "pct": safe_float(res["data"].get("f170"))}
+            
     cnh_url = "https://push2.eastmoney.com/api/qt/stock/get?secid=133.USDCNH&ut=fa5fd1943c7b386f172d6893dbfba10b&fltt=2&fields=f43,f170"
     cnh_res = fetch_json(cnh_url)
     if cnh_res and cnh_res.get("data"):
         pulse["USD/CNH(离岸)"] = {"price": safe_float(cnh_res["data"].get("f43")), "pct": safe_float(cnh_res["data"].get("f170"))}
+        
     return pulse
 
+@st.cache_data(ttl=300)
+def get_hot_blocks():
+    """获取当天涨幅最猛的热门板块 (被复活的核心功能)"""
+    try:
+        df = ak.stock_board_industry_name_em()
+        if df is not None and not df.empty:
+            top_blocks = df.sort_values(by="涨跌幅", ascending=False).head(10)
+            return top_blocks[["板块名称", "涨跌幅", "上涨家数", "下跌家数", "领涨股票"]].to_dict('records')
+    except: pass
+    return None
+
 def get_stock_quote(symbol):
+    """个股行情获取"""
     market = "1" if str(symbol).startswith(("6", "9", "5", "7")) else "0"
     url = f"https://push2.eastmoney.com/api/qt/stock/get?secid={market}.{symbol}&ut=fa5fd1943c7b386f172d6893dbfba10b&fltt=2&fields=f58,f43,f170,f116,f162,f168"
     res = fetch_json(url)
     if res and res.get("data"):
         d = res["data"]
         return {
-            "name": d.get("f58", "未知"), "price": safe_float(d.get("f43")), "pct": safe_float(d.get("f170")),
-            "market_cap": safe_float(d.get("f116")) / 100000000, "pe": d.get("f162", "-"), "turnover": safe_float(d.get("f168"))
+            "name": d.get("f58", "未知"),
+            "price": safe_float(d.get("f43")),
+            "pct": safe_float(d.get("f170")),
+            "market_cap": safe_float(d.get("f116")) / 100000000,
+            "pe": d.get("f162", "-"),
+            "turnover": safe_float(d.get("f168"))
         }
     return None
 
@@ -116,155 +161,176 @@ def get_kline(symbol, days=60):
     try:
         df = ak.stock_zh_a_hist(symbol=str(symbol), period="daily", adjust="qfq")
         if df is not None and not df.empty:
-            df = df.rename(columns={"日期": "date", "开盘": "open", "收盘": "close", "最高": "high", "最低": "low", "成交量": "vol"})
-            df[['open', 'close', 'high', 'low']] = df[['open', 'close', 'high', 'low']].astype(float)
-            return df.tail(days).reset_index(drop=True)
+            df = df.rename(columns={"日期": "date", "收盘": "close"})
+            return df[["date", "close"]].tail(days)
     except: pass
     return None
 
-# ================= 高阶量化特征与支撑压力引擎 =================
-def extract_quant_features(df):
-    if df is None or len(df) < 20:
-        return {"fvg_status": "数据不足", "fvg_gap": "N/A", "volatility": "N/A", "momentum": "N/A", "support": "N/A", "resistance": "N/A"}
-    
-    # 1. 动态支撑位与压力位 (基于近20日极值与密集交易区)
-    recent_20 = df.tail(20)
-    resistance = recent_20['high'].max()
-    support = recent_20['low'].min()
-    
-    # 2. 寻找最近的 FVG (Fair Value Gap)
-    fvg_status = "未检测到近期缺口"
-    fvg_gap = "无"
-    for i in range(len(df)-1, 1, -1):
-        c1_high, c1_low = df.loc[i-2, 'high'], df.loc[i-2, 'low']
-        c3_high, c3_low = df.loc[i, 'high'], df.loc[i, 'low']
-        
-        if c1_low > c3_high:
-            fvg_status = "📉 Bearish FVG (看跌压力区)"
-            fvg_gap = f"{c3_high:.2f} - {c1_low:.2f}"
-            break
-        elif c1_high < c3_low:
-            fvg_status = "📈 Bullish FVG (看涨支撑区)"
-            fvg_gap = f"{c1_high:.2f} - {c3_low:.2f}"
-            break
-
-    # 3. 因子模型：波动率与动量
-    returns = df['close'].pct_change()
-    volatility_20d = returns.tail(20).std() * np.sqrt(252) * 100
-    momentum_10d = (df['close'].iloc[-1] / df['close'].iloc[-11] - 1) * 100 if len(df) > 10 else 0
-    
-    return {
-        "fvg_status": fvg_status, "fvg_gap": fvg_gap,
-        "volatility": f"{volatility_20d:.2f}%", "momentum": f"{momentum_10d:.2f}%",
-        "support": f"{support:.2f}", "resistance": f"{resistance:.2f}"
-    }
-
 # ================= AI 计算核心 =================
-def call_ai(prompt, model="llama-3.3-70b-versatile", temperature=0.2):
+def call_ai(prompt, model="llama-3.3-70b-versatile", temperature=0.3):
     try:
         client = Groq(api_key=api_key)
         completion = client.chat.completions.create(
-            messages=[{"role": "user", "content": prompt}], model=model, temperature=temperature
+            messages=[{"role": "user", "content": prompt}],
+            model=model,
+            temperature=temperature
         )
         return completion.choices[0].message.content
     except Exception as e:
-        return f"❌ AI 节点故障: {e}"
+        return f"❌ AI 计算节点故障: {e}"
 
-# ================= 终端全局看板 =================
-st.markdown("### 🌍 宏观市场看板")
+
+# ================= 终端全局看板 (适配移动端折行) =================
+st.markdown("### 🌍 宏观市场实时看板")
 pulse_data = get_market_pulse()
 if pulse_data:
+    # 手机端自动换行，不再固定列宽
     dash_cols = st.columns(len(pulse_data))
     for idx, (key, data) in enumerate(pulse_data.items()):
         with dash_cols[idx]:
             with st.container(border=True):
-                if "CNH" in key: st.metric(key, f"{data['price']:.4f}", f"{data['pct']:.2f}%", delta_color="inverse")
-                else: st.metric(key, f"{data['price']:.2f}", f"{data['pct']:.2f}%")
+                if "CNH" in key:
+                    st.metric(key, f"{data['price']:.4f}", f"{data['pct']:.2f}%", delta_color="inverse")
+                else:
+                    st.metric(key, f"{data['price']:.2f}", f"{data['pct']:.2f}%")
+else:
+    st.warning("宏观看板数据流建立失败。")
 
 st.markdown("<br>", unsafe_allow_html=True)
 
-# ================= 终端功能选项卡 =================
-tab1, tab2, tab3 = st.tabs(["🎯 I. 个股实战与验证 (TrendIQ)", "📈 II. 大盘与热点推演", "🦅 III. 替代数据监控"])
+# ================= 终端功能选项卡 (恢复为 4 个 Tab) =================
+tab1, tab2, tab3, tab4 = st.tabs([
+    "🎯 I. 个股标的解析", 
+    "📈 II. 宏观大盘推演", 
+    "🔥 III. 资金热点板块",
+    "🦅 IV. 高阶情报终端"
+])
 
-# ----------------- Tab 1: 个股解析与实战买卖点 -----------------
+# ----------------- Tab 1: 个股解析 -----------------
 with tab1:
     with st.container(border=True):
-        col1, col2 = st.columns([1, 1])
+        st.markdown("#### 🔎 个股雷达锁定")
+        col1, col2 = st.columns([1, 1]) # 手机端自适应更好
         with col1:
             symbol_input = st.text_input("标的代码", placeholder="例：600519")
-            analyze_btn = st.button("启动量化与买卖点测算", type="primary", use_container_width=True)
+            analyze_btn = st.button("启动核心算法", type="primary", use_container_width=True)
             
         if analyze_btn:
             if not api_key: st.error("配置缺失: GROQ_API_KEY")
             elif len(symbol_input.strip()) != 6: st.warning("代码规范验证失败")
             else:
-                with st.spinner("提取深度量价特征、支撑阻力位与 FVG 缺口..."):
+                with st.spinner("量子计算与数据提取中..."):
                     quote = get_stock_quote(symbol_input)
                     df_kline = get_kline(symbol_input)
-                    quant_features = extract_quant_features(df_kline)
                     
-                if not quote: st.error("无法捕获行情资产。")
+                if not quote:
+                    st.error("无法捕获行情资产。")
                 else:
                     st.markdown("---")
                     name, price, pct = quote["name"], quote["price"], quote["pct"]
-                    
-                    # 基础信息
                     c1, c2, c3, c4 = st.columns(4)
                     c1.metric(f"{name}", f"{price:.2f}", f"{pct:.2f}%")
                     c2.metric("总市值(亿)", f"{quote['market_cap']:.1f}")
                     c3.metric("动态PE", f"{quote['pe']}")
                     c4.metric("换手率", f"{quote['turnover']:.2f}%")
                     
-                    # 关键点位与指标卡片 (为手机端高度优化)
-                    st.markdown("##### 📍 关键防守与阻力阵地")
-                    p1, p2, p3 = st.columns(3)
-                    with p1: st.success(f"**强支撑位 (Support)**\n\n¥ {quant_features['support']}")
-                    with p2: st.error(f"**强压力位 (Resistance)**\n\n¥ {quant_features['resistance']}")
-                    with p3: st.info(f"**FVG 缺口位置**\n\n{quant_features['fvg_gap']}\n\n({quant_features['fvg_status']})")
-                    
                     st.line_chart(df_kline.set_index("date")["close"] if df_kline is not None else [])
                     
-                    with st.spinner("🧠 正在执行 TrendIQ 级多维策略验证并计算买卖点..."):
+                    with st.spinner("🧠 首席策略官撰写资产评估报告..."):
                         prompt = f"""
-你是全球顶级量化对冲基金的【策略主理人】。你深谙 TrendIQ 交易验证软件的逻辑：不仅要懂宏大叙事，更要敢于给出明确的交易点位。
-目标资产: {name} ({symbol_input})。实时现价: {price}。
-【底层算法提取的关键数据】：
-- 强支撑位: {quant_features['support']}
-- 强压力位: {quant_features['resistance']}
-- FVG 缺口: {quant_features['fvg_status']} (位置: {quant_features['fvg_gap']})
-- 短期动量因子: {quant_features['momentum']}
-- 年化波动率: {quant_features['volatility']}
+                        作为顶级私募经理，基于资产 {name}({symbol_input}) 的最新状态：现价: {price}, 涨幅: {pct}%, 市值: {quote['market_cap']}亿, 换手: {quote['turnover']}%。
+                        请输出专业量化分析：1.基本面与估值诊断。2.资金意图预判。3.支撑/阻力操作建议。
+                        """
+                        st.markdown(call_ai(prompt))
 
-请严格按照以下 3 大模块输出报告，排版要干脆利落（禁绝废话）：
-
-### 1. 🧠 多维模型联合推演
-一句话融合 DRL(动量/波动率)、替代数据叙事和自适应因子的当前状态，判断是多头控盘还是空头肆虐？
-
-### 2. 🛡️ 盘口逻辑与 FVG 拆解
-当前价格 {price} 距离支撑位和压力位的风险收益比如何？如果有 FVG 缺口，主力资金大概率会在这里做什么动作（回补还是突破）？
-
-### 3. 🎯 TrendIQ 级实战交易计划 (核心！)
-结合以上所有数据，必须给出极度明确的操作指令。禁止模糊其词！
-* **总体判定**: [Buy / Sell / Hold]
-* **建仓区间 (Entry)**: [给出具体的建议价格区间，必须结合现价与支撑位]
-* **第一止盈位 (Target 1)**: [基于测算的强压力位 {quant_features['resistance']} 给出一个具体价格]
-* **硬性止损位 (Stop Loss)**: [基于强支撑 {quant_features['support']} 或 FVG 缺口的破位点，给出绝对止损价]
-"""
-                        st.markdown(call_ai(prompt, temperature=0.1)) # 调低温度，让数值建议更客观稳定
-
-# ----------------- Tab 2 & 3: 保持稳定功能 -----------------
+# ----------------- Tab 2: 宏观大盘推演 -----------------
 with tab2:
-    st.write("结合全局宏观与板块资金进行大局观研判。")
-    if st.button("运行大局沙盘推演"):
-        # 略去非核心代码描述，保证执行效率
-        prompt = f"基于实时数据：{str(pulse_data)}。请输出：1.全景定调。2.短线剧本。"
-        st.markdown(call_ai(prompt, temperature=0.4))
+    with st.container(border=True):
+        st.markdown("#### 📊 全盘系统级推演")
+        st.write("结合全局宏观看板与近期市场结构，进行大局观研判。")
+        if st.button("运行大盘沙盘推演", type="primary"):
+            if not api_key: st.error("配置缺失: GROQ_API_KEY")
+            else:
+                with st.spinner("推演引擎初始化..."):
+                    prompt = f"""
+                    你现在是高盛首席宏观策略师。请基于当前A股与外汇的精准数据进行大局观推演：
+                    实时数据：{str(pulse_data)}
+                    请输出：1. 市场全景定调（分化还是普涨）。2. 北向资金意愿推断（基于汇率）。3. 短期沙盘推演方向。
+                    """
+                    st.markdown(call_ai(prompt, temperature=0.4))
 
+# ----------------- Tab 3: 热点资金板块 (满血复活) -----------------
 with tab3:
-    st.write("监听全球重大异动与替代数据。")
-    if st.button("🚨 截获并解析全球突发"):
-        with st.spinner("解析替代数据流..."):
-            global_news = get_global_news()
-            if global_news:
-                prompt = f"过滤以下快讯提取5条核心动态(生成独立信息卡片，禁表格)：\n{chr(10).join(global_news)}"
-                st.markdown(call_ai(prompt, temperature=0.1))
+    with st.container(border=True):
+        st.markdown("#### 🔥 当日主力资金狂欢地 (Top 10)")
+        st.write("追踪全天涨幅最猛的行业板块，揪出领涨龙头，识别主线题材。")
+        
+        if st.button("扫描今日热点板块", type="primary"):
+            if not api_key: st.error("配置缺失: GROQ_API_KEY")
+            else:
+                with st.spinner("深潜获取东方财富板块异动数据..."):
+                    blocks = get_hot_blocks()
+                    if blocks:
+                        df_blocks = pd.DataFrame(blocks)
+                        # 手机端友好的表格展示
+                        st.dataframe(df_blocks, use_container_width=True, hide_index=True)
+                        
+                        with st.spinner("🧠 首席游资操盘手拆解底层逻辑..."):
+                            blocks_str = "\n".join([f"{b['板块名称']} (涨幅:{b['涨跌幅']}%, 领涨:{b['领涨股票']})" for b in blocks[:5]])
+                            prompt = f"""
+                            作为顶级游资操盘手，请解读今日最强的5个板块：
+                            {blocks_str}
+                            请输出：
+                            1. 【核心驱动】领涨板块背后的底层逻辑或政策利好是什么？
+                            2. 【行情定性】这是“一日游”情绪宣泄，还是具备中线潜力的“主线行情”？
+                            3. 【低位延展】散户不能盲目追高，请推荐 1-2 个可能被资金轮动到的低位关联延伸概念。
+                            """
+                            st.markdown(call_ai(prompt, temperature=0.4))
+                    else:
+                        st.error("获取板块数据失败，接口可能正处于熔断保护期。")
+
+# ----------------- Tab 4: 高阶情报终端 (移动端卡片式重构) -----------------
+with tab4:
+    st.markdown("#### 📡 机构级事件图谱与智能评级矩阵")
+    st.write("追踪彭博、推特、美联储、特朗普等宏观变量。**已深度适配移动端，告别表格左右滑动烦恼！**")
+    
+    if st.button("🚨 截获并解析全球突发", type="primary"):
+        if not api_key: st.error("配置缺失: GROQ_API_KEY")
+        else:
+            with st.spinner("监听全网节点并执行深度NLP解析..."):
+                global_news = get_global_news()
+                if not global_news:
+                    st.warning("当前信号静默或被防火墙拦截。")
+                else:
+                    news_text = "\n".join(global_news)
+                    with st.expander("🕵️‍♂️ 查看底层监听流 (Raw Data)"):
+                        st.text(news_text)
+
+                    with st.spinner("🧠 情报官正在生成自适应移动端的情报卡片..."):
+                        # 终极提示词修改：强力禁止 Markdown 表格，改用卡片排版
+                        prompt = f"""
+你现在是华尔街对冲基金的【首席地缘与宏观情报官】。
+我截获了全球金融市场的底层快讯流。请你挑选出最具爆炸性和市场影响力的 5-8 条动态。
+
+重点寻猎靶标：彭博社(Bloomberg)、推特(X)、特朗普(Trump)、马斯克(Musk)、美联储。
+
+⚠️【排版严令：禁止使用 Markdown 表格】⚠️
+为了适配我的手机端屏幕，你绝对不能使用表格！必须为每一个事件生成一个独立的“信息卡片”，格式如下：
+
+### [评级Emoji] [信源/人物] 事件核心提炼标题
+* ⏰ **时间**: [提取对应时间]
+* 🎯 **受影响资产**: [具象化指出利好/利空的资产或板块，如：农业板块、加密货币、出口链]
+* 🧠 **深度推演**: [一句话精炼指出对金融市场的实质影响]
+---
+
+在 [评级Emoji] 处，严格使用以下三种：
+🔴 核心：直接引发巨震的突发、大选级人物表态。
+🟡 重要：关键经济数据、行业政策。
+🔵 一般：常规事件。
+
+底层情报数据流：
+{news_text}
+"""
+                        report = call_ai(prompt, temperature=0.1)
+                        st.markdown("---")
+                        st.markdown(report)
