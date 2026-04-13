@@ -2,7 +2,6 @@ streamlit
 groq
 pandas
 requests
-urllib3
 akshare
 tushare
-numpy
+plotly
