@@ -50,7 +50,7 @@ st.markdown("""
 
 st.title("🏦 AI 智能量化投研终端")
 st.markdown(
-    f"<div class='terminal-header'>TERMINAL BUILD v5.3.0 | SYS_TIME: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | MOBILE OPTIMIZED</div>",
+    f"<div class='terminal-header'>TERMINAL BUILD v5.4.0 | SYS_TIME: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | MOBILE OPTIMIZED</div>",
     unsafe_allow_html=True
 )
 
@@ -126,16 +126,19 @@ def fetch_json(url, timeout=5, extra_headers=None):
 def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
 
+    # EMA
     df["ema20"] = df["close"].ewm(span=20, adjust=False).mean()
     df["ema60"] = df["close"].ewm(span=60, adjust=False).mean()
     df["ema120"] = df["close"].ewm(span=120, adjust=False).mean()
 
+    # MACD
     ema12 = df["close"].ewm(span=12, adjust=False).mean()
     ema26 = df["close"].ewm(span=26, adjust=False).mean()
     df["macd"] = ema12 - ema26
     df["macd_signal"] = df["macd"].ewm(span=9, adjust=False).mean()
     df["macd_hist"] = df["macd"] - df["macd_signal"]
 
+    # RSI14
     delta = df["close"].diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
@@ -144,6 +147,7 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     rs = avg_gain / avg_loss.replace(0, pd.NA)
     df["rsi14"] = 100 - (100 / (1 + rs))
 
+    # ATR14
     prev_close = df["close"].shift(1)
     tr1 = df["high"] - df["low"]
     tr2 = (df["high"] - prev_close).abs()
@@ -151,19 +155,23 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["tr"] = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
     df["atr14"] = df["tr"].rolling(14).mean()
 
+    # Bollinger
     ma20 = df["close"].rolling(20).mean()
     std20 = df["close"].rolling(20).std()
     df["bb_mid"] = ma20
     df["bb_up"] = ma20 + 2 * std20
     df["bb_low"] = ma20 - 2 * std20
 
+    # Volume MA
     df["vol_ma20"] = df["volume"].rolling(20).mean()
+
     return df
 
 
 def detect_swings(df: pd.DataFrame, left=2, right=2):
     swing_highs = []
     swing_lows = []
+
     if len(df) < left + right + 1:
         return swing_highs, swing_lows
 
@@ -491,7 +499,7 @@ def get_global_news():
     news = []
     if res and res.get("result", {}).get("data", {}).get("feed", {}).get("list"):
         for item in res["result"]["data"]["feed"]["list"]:
-            text = re.sub(r"<[^>]+>", "", str(item.get("rich_text", "")).strip())
+            text = re.sub(r'<[^>]+>', '', str(item.get("rich_text", "")).strip())
             if len(text) > 15:
                 news.append(f"[{item.get('create_time', '')}] {text}")
     return news
@@ -521,7 +529,7 @@ def get_hot_blocks():
         df = ak.stock_board_industry_name_em()
         if df is not None and not df.empty:
             top_blocks = df.sort_values(by="涨跌幅", ascending=False).head(10)
-            return top_blocks[["板块名称", "涨跌幅", "上涨家数", "下跌家数", "领涨股票"]].to_dict("records")
+            return top_blocks[["板块名称", "涨跌幅", "上涨家数", "下跌家数", "领涨股票"]].to_dict('records')
     except Exception:
         pass
     return None
@@ -548,6 +556,7 @@ def get_stock_quote(symbol):
 
 
 def get_kline(symbol, days=220):
+    # 1) AKShare 前复权
     try:
         df = ak.stock_zh_a_hist(symbol=str(symbol), period="daily", adjust="qfq")
         if df is not None and not df.empty:
@@ -561,21 +570,75 @@ def get_kline(symbol, days=220):
                 "成交额": "amount",
                 "换手率": "turnover_rate"
             })
-
             keep_cols = ["date", "open", "high", "low", "close", "volume"]
-            for col in keep_cols:
-                if col not in df.columns:
-                    return None
+            if all(col in df.columns for col in keep_cols):
+                df = df[keep_cols].copy()
+                df["date"] = pd.to_datetime(df["date"])
+                for col in ["open", "high", "low", "close", "volume"]:
+                    df[col] = pd.to_numeric(df[col], errors="coerce")
+                df = df.dropna().reset_index(drop=True)
+                if len(df) > 0:
+                    return df.tail(days)
+    except Exception as e:
+        if DEBUG_MODE:
+            st.warning(f"AKShare qfq K线失败: {e}")
 
-            df = df[keep_cols].copy()
-            df["date"] = pd.to_datetime(df["date"])
-            for col in ["open", "high", "low", "close", "volume"]:
-                df[col] = pd.to_numeric(df[col], errors="coerce")
+    # 2) AKShare 不复权
+    try:
+        df = ak.stock_zh_a_hist(symbol=str(symbol), period="daily", adjust="")
+        if df is not None and not df.empty:
+            df = df.rename(columns={
+                "日期": "date",
+                "开盘": "open",
+                "收盘": "close",
+                "最高": "high",
+                "最低": "low",
+                "成交量": "volume",
+                "成交额": "amount",
+                "换手率": "turnover_rate"
+            })
+            keep_cols = ["date", "open", "high", "low", "close", "volume"]
+            if all(col in df.columns for col in keep_cols):
+                df = df[keep_cols].copy()
+                df["date"] = pd.to_datetime(df["date"])
+                for col in ["open", "high", "low", "close", "volume"]:
+                    df[col] = pd.to_numeric(df[col], errors="coerce")
+                df = df.dropna().reset_index(drop=True)
+                if len(df) > 0:
+                    return df.tail(days)
+    except Exception as e:
+        if DEBUG_MODE:
+            st.warning(f"AKShare raw K线失败: {e}")
 
-            df = df.dropna().tail(days).reset_index(drop=True)
-            return df
-    except Exception:
-        pass
+    # 3) Tushare 兜底
+    try:
+        if ts_token:
+            pro = ts.pro_api()
+            market = ".SH" if str(symbol).startswith(("6", "9", "5", "7")) else ".SZ"
+            ts_code = f"{symbol}{market}"
+            df = pro.daily(ts_code=ts_code)
+            if df is not None and not df.empty:
+                df = df.rename(columns={
+                    "trade_date": "date",
+                    "open": "open",
+                    "high": "high",
+                    "low": "low",
+                    "close": "close",
+                    "vol": "volume"
+                })
+                keep_cols = ["date", "open", "high", "low", "close", "volume"]
+                if all(col in df.columns for col in keep_cols):
+                    df = df[keep_cols].copy()
+                    df["date"] = pd.to_datetime(df["date"], format="%Y%m%d")
+                    for col in ["open", "high", "low", "close", "volume"]:
+                        df[col] = pd.to_numeric(df[col], errors="coerce")
+                    df = df.dropna().sort_values("date").reset_index(drop=True)
+                    if len(df) > 0:
+                        return df.tail(days)
+    except Exception as e:
+        if DEBUG_MODE:
+            st.warning(f"Tushare K线失败: {e}")
+
     return None
 
 
@@ -653,12 +716,14 @@ with tab1:
                     c3.metric("动态PE", f"{quote['pe']}")
                     c4.metric("换手率", f"{quote['turnover']:.2f}%")
 
-                    if df_kline is None or df_kline.empty or len(df_kline) < 20:
-                        st.warning("K线样本过少，仅展示基础行情分析。")
+                    # ===== 分层降级逻辑 =====
+                    if df_kline is None or df_kline.empty:
+                        st.warning("未获取到K线数据，仅展示基础行情分析。")
+
                         with st.spinner("🧠 首席策略官撰写基础资产评估报告..."):
                             prompt = f"""
 作为顶级私募经理，请基于股票 {name}({symbol_input}) 当前状态：
-现价 {price}，涨跌幅 {pct}%，市值 {quote['market_cap']} 亿，动态PE {quote['pe']}，换手率 {quote['turnover']}%。
+现价 {price}，涨跌幅 {pct}%，市值 {quote['market_cap']} 亿，动态PE {quote['pe']}，市净率PB {quote['pb']}，换手率 {quote['turnover']}%。
 
 请输出：
 1. 基本面与估值诊断
@@ -669,6 +734,50 @@ with tab1:
 要求：简洁、专业、像机构日报。
 """
                             st.markdown(call_ai(prompt))
+
+                    elif len(df_kline) < 20:
+                        st.warning(f"K线样本仅 {len(df_kline)} 根，无法运行完整增强分析，切换为简化技术分析。")
+
+                        temp = df_kline.copy()
+                        temp["date"] = temp["date"].dt.strftime("%Y-%m-%d")
+                        st.line_chart(temp.set_index("date")["close"])
+
+                        latest_close = temp["close"].iloc[-1]
+                        recent_high = temp["close"].max()
+                        recent_low = temp["close"].min()
+
+                        c1, c2, c3 = st.columns(3)
+                        c1.metric("最新收盘", f"{latest_close:.2f}")
+                        c2.metric("近阶段高点", f"{recent_high:.2f}")
+                        c3.metric("近阶段低点", f"{recent_low:.2f}")
+
+                        with st.spinner("🧠 首席策略官撰写简化技术报告..."):
+                            prompt = f"""
+你现在是顶级私募基金经理。
+股票 {name}({symbol_input}) 当前数据如下：
+
+- 现价: {price}
+- 日涨跌幅: {pct}%
+- 总市值: {quote['market_cap']} 亿
+- 动态PE: {quote['pe']}
+- 市净率PB: {quote['pb']}
+- 换手率: {quote['turnover']}%
+- K线样本数量: {len(df_kline)}
+- 近期最高收盘: {recent_high}
+- 近期最低收盘: {recent_low}
+- 最新收盘: {latest_close}
+
+请输出：
+1. 当前所处的大致位置（相对高位 / 中位 / 低位）
+2. 趋势判断
+3. 短线风险与机会
+4. 简化交易计划
+5. 结论：看多 / 观察 / 谨慎
+
+要求：简洁、专业、机构化。
+"""
+                            st.markdown(call_ai(prompt))
+
                     else:
                         df_kline = add_indicators(df_kline)
                         tech = summarize_technicals(df_kline)
@@ -859,9 +968,7 @@ with tab3:
                         st.dataframe(df_blocks, width="stretch", hide_index=True)
 
                         with st.spinner("🧠 首席游资操盘手拆解底层逻辑..."):
-                            blocks_str = "\n".join(
-                                [f"{b['板块名称']} (涨幅:{b['涨跌幅']}%, 领涨:{b['领涨股票']})" for b in blocks[:5]]
-                            )
+                            blocks_str = "\n".join([f"{b['板块名称']} (涨幅:{b['涨跌幅']}%, 领涨:{b['领涨股票']})" for b in blocks[:5]])
                             prompt = f"""
 作为顶级游资操盘手，请解读今日最强的5个板块：
 
@@ -880,7 +987,7 @@ with tab3:
 # ================= Tab 4: 高阶情报终端 =================
 with tab4:
     st.markdown("#### 📡 机构级事件图谱与智能评级矩阵")
-    st.write("追踪彭博、推特、美联储、特朗普等宏观变量。已深度适配移动端。")
+    st.write("追踪彭博、推特、美联储、特朗普等宏观变量。已深度适配移动端，告别表格左右滑动烦恼。")
 
     if st.button("🚨 截获并解析全球突发", type="primary"):
         if not api_key:
