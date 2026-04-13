@@ -9,6 +9,7 @@ import akshare as ak
 import tushare as ts
 import random
 from datetime import datetime
+import plotly.graph_objects as go
 
 
 # ================= 页面与终端 UI 配置 =================
@@ -49,7 +50,7 @@ st.markdown("""
 
 st.title("🏦 AI 智能量化投研终端")
 st.markdown(
-    f"<div class='terminal-header'>TERMINAL BUILD v5.2.0 | SYS_TIME: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | MOBILE OPTIMIZED</div>",
+    f"<div class='terminal-header'>TERMINAL BUILD v5.3.0 | SYS_TIME: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | MOBILE OPTIMIZED</div>",
     unsafe_allow_html=True
 )
 
@@ -77,7 +78,7 @@ USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:115.0) Gecko/20100101 Firefox/115.0",
-    "Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Mobile Safari/537.36"
+    "Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Mobile Safari/537.36",
 ]
 
 
@@ -87,7 +88,7 @@ def get_session():
     retry = Retry(
         total=3,
         backoff_factor=0.5,
-        status_forcelist=[403, 429, 500, 502, 503, 504]
+        status_forcelist=[403, 429, 500, 502, 503, 504],
     )
     adapter = HTTPAdapter(max_retries=retry)
     session.mount("https://", adapter)
@@ -125,19 +126,16 @@ def fetch_json(url, timeout=5, extra_headers=None):
 def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
 
-    # EMA
     df["ema20"] = df["close"].ewm(span=20, adjust=False).mean()
     df["ema60"] = df["close"].ewm(span=60, adjust=False).mean()
     df["ema120"] = df["close"].ewm(span=120, adjust=False).mean()
 
-    # MACD
     ema12 = df["close"].ewm(span=12, adjust=False).mean()
     ema26 = df["close"].ewm(span=26, adjust=False).mean()
     df["macd"] = ema12 - ema26
     df["macd_signal"] = df["macd"].ewm(span=9, adjust=False).mean()
     df["macd_hist"] = df["macd"] - df["macd_signal"]
 
-    # RSI14
     delta = df["close"].diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
@@ -146,7 +144,6 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     rs = avg_gain / avg_loss.replace(0, pd.NA)
     df["rsi14"] = 100 - (100 / (1 + rs))
 
-    # ATR14
     prev_close = df["close"].shift(1)
     tr1 = df["high"] - df["low"]
     tr2 = (df["high"] - prev_close).abs()
@@ -154,22 +151,21 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["tr"] = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
     df["atr14"] = df["tr"].rolling(14).mean()
 
-    # Bollinger Bands
     ma20 = df["close"].rolling(20).mean()
     std20 = df["close"].rolling(20).std()
     df["bb_mid"] = ma20
     df["bb_up"] = ma20 + 2 * std20
     df["bb_low"] = ma20 - 2 * std20
 
-    # Volume MA
     df["vol_ma20"] = df["volume"].rolling(20).mean()
-
     return df
 
 
 def detect_swings(df: pd.DataFrame, left=2, right=2):
     swing_highs = []
     swing_lows = []
+    if len(df) < left + right + 1:
+        return swing_highs, swing_lows
 
     for i in range(left, len(df) - right):
         high = df.loc[i, "high"]
@@ -185,11 +181,13 @@ def detect_swings(df: pd.DataFrame, left=2, right=2):
 
 def detect_fvg(df: pd.DataFrame, max_zones=5):
     zones = []
+    if len(df) < 3:
+        return zones
+
     for i in range(2, len(df)):
-        c1 = df.iloc[i-2]
+        c1 = df.iloc[i - 2]
         c3 = df.iloc[i]
 
-        # Bullish FVG
         if c3["low"] > c1["high"]:
             zones.append({
                 "type": "bullish",
@@ -200,7 +198,6 @@ def detect_fvg(df: pd.DataFrame, max_zones=5):
                 "date": str(pd.to_datetime(c3["date"]).date())
             })
 
-        # Bearish FVG
         if c3["high"] < c1["low"]:
             zones.append({
                 "type": "bearish",
@@ -244,6 +241,121 @@ def detect_bos(df: pd.DataFrame):
     if latest_close < last_swing_low:
         return "向下 BOS（结构破坏）"
     return "结构未突破"
+
+
+def detect_order_blocks(df: pd.DataFrame, lookback=30, max_zones=4):
+    zones = []
+    recent = df.tail(lookback).reset_index(drop=True)
+
+    if len(recent) < 3 or "atr14" not in recent.columns:
+        return zones
+
+    for i in range(1, len(recent) - 1):
+        curr = recent.iloc[i]
+        nxt = recent.iloc[i + 1]
+        body_curr = abs(curr["close"] - curr["open"])
+        atr = recent["atr14"].iloc[i]
+
+        if pd.isna(atr):
+            continue
+
+        if curr["close"] < curr["open"] and nxt["close"] > curr["high"] and body_curr < atr * 1.2:
+            zones.append({
+                "type": "bullish_ob",
+                "date": str(pd.to_datetime(curr["date"]).date()),
+                "top": max(curr["open"], curr["close"]),
+                "bottom": min(curr["open"], curr["close"])
+            })
+
+        if curr["close"] > curr["open"] and nxt["close"] < curr["low"] and body_curr < atr * 1.2:
+            zones.append({
+                "type": "bearish_ob",
+                "date": str(pd.to_datetime(curr["date"]).date()),
+                "top": max(curr["open"], curr["close"]),
+                "bottom": min(curr["open"], curr["close"])
+            })
+
+    return zones[-max_zones:]
+
+
+def detect_equal_high_low(df: pd.DataFrame, tolerance=0.003):
+    swing_highs, swing_lows = detect_swings(df)
+    eqh = []
+    eql = []
+
+    for i in range(len(swing_highs) - 1):
+        h1 = swing_highs[i][1]
+        h2 = swing_highs[i + 1][1]
+        if h1 > 0 and abs(h1 - h2) / h1 <= tolerance:
+            eqh.append((swing_highs[i], swing_highs[i + 1]))
+
+    for i in range(len(swing_lows) - 1):
+        l1 = swing_lows[i][1]
+        l2 = swing_lows[i + 1][1]
+        if l1 > 0 and abs(l1 - l2) / l1 <= tolerance:
+            eql.append((swing_lows[i], swing_lows[i + 1]))
+
+    return eqh[-3:], eql[-3:]
+
+
+def detect_mss(df: pd.DataFrame):
+    swing_highs, swing_lows = detect_swings(df)
+    if len(swing_highs) < 2 or len(swing_lows) < 2 or len(df) < 2:
+        return "样本不足"
+
+    latest = df.iloc[-1]
+    prev = df.iloc[-2]
+    last_high = swing_highs[-1][1]
+    last_low = swing_lows[-1][1]
+
+    if prev["close"] < last_high and latest["close"] > last_high:
+        return "Bullish MSS（多头结构转换）"
+    if prev["close"] > last_low and latest["close"] < last_low:
+        return "Bearish MSS（空头结构转换）"
+    return "暂无明显 MSS"
+
+
+def get_premium_discount_zone(df: pd.DataFrame, lookback=60):
+    recent = df.tail(lookback)
+    if recent.empty:
+        return None
+
+    range_high = recent["high"].max()
+    range_low = recent["low"].min()
+    eq = (range_high + range_low) / 2
+    latest_close = recent.iloc[-1]["close"]
+
+    zone = "Equilibrium"
+    if latest_close > eq:
+        zone = "Premium Zone"
+    elif latest_close < eq:
+        zone = "Discount Zone"
+
+    return {
+        "range_high": range_high,
+        "range_low": range_low,
+        "equilibrium": eq,
+        "zone": zone
+    }
+
+
+def build_smc_summary(df: pd.DataFrame):
+    obs = detect_order_blocks(df)
+    eqh, eql = detect_equal_high_low(df)
+    mss = detect_mss(df)
+    pd_zone = get_premium_discount_zone(df)
+
+    latest_bull_ob = next((z for z in reversed(obs) if z["type"] == "bullish_ob"), None)
+    latest_bear_ob = next((z for z in reversed(obs) if z["type"] == "bearish_ob"), None)
+
+    return {
+        "latest_bull_ob": latest_bull_ob,
+        "latest_bear_ob": latest_bear_ob,
+        "eqh": eqh,
+        "eql": eql,
+        "mss": mss,
+        "pd_zone": pd_zone
+    }
 
 
 def summarize_technicals(df: pd.DataFrame):
@@ -294,6 +406,8 @@ def summarize_technicals(df: pd.DataFrame):
     nearest_bull_fvg = next((z for z in reversed(fvg_zones) if z["type"] == "bullish"), None)
     nearest_bear_fvg = next((z for z in reversed(fvg_zones) if z["type"] == "bearish"), None)
 
+    smc = build_smc_summary(df)
+
     return {
         "trend": trend,
         "momentum": momentum,
@@ -310,19 +424,74 @@ def summarize_technicals(df: pd.DataFrame):
         "ema20": latest["ema20"],
         "ema60": latest["ema60"],
         "ema120": latest["ema120"],
+        "smc": smc
     }
+
+
+def build_price_figure(df: pd.DataFrame):
+    plot_df = df.copy()
+    plot_df["date_str"] = plot_df["date"].dt.strftime("%Y-%m-%d")
+
+    fig = go.Figure()
+
+    fig.add_trace(go.Candlestick(
+        x=plot_df["date_str"],
+        open=plot_df["open"],
+        high=plot_df["high"],
+        low=plot_df["low"],
+        close=plot_df["close"],
+        name="K线"
+    ))
+
+    fig.add_trace(go.Scatter(
+        x=plot_df["date_str"], y=plot_df["ema20"],
+        mode="lines", name="EMA20"
+    ))
+    fig.add_trace(go.Scatter(
+        x=plot_df["date_str"], y=plot_df["ema60"],
+        mode="lines", name="EMA60"
+    ))
+    fig.add_trace(go.Scatter(
+        x=plot_df["date_str"], y=plot_df["ema120"],
+        mode="lines", name="EMA120"
+    ))
+
+    for zone in detect_fvg(plot_df, max_zones=4):
+        start_idx = zone["start_idx"]
+        end_idx = min(len(plot_df) - 1, start_idx + 12)
+
+        x0 = plot_df.iloc[start_idx]["date_str"]
+        x1 = plot_df.iloc[end_idx]["date_str"]
+        fillcolor = "rgba(0, 200, 0, 0.15)" if zone["type"] == "bullish" else "rgba(200, 0, 0, 0.15)"
+
+        fig.add_shape(
+            type="rect",
+            x0=x0, x1=x1,
+            y0=zone["bottom"], y1=zone["top"],
+            line=dict(width=0),
+            fillcolor=fillcolor
+        )
+
+    fig.update_layout(
+        height=520,
+        xaxis_title="日期",
+        yaxis_title="价格",
+        xaxis_rangeslider_visible=False,
+        legend_title="图层",
+        margin=dict(l=20, r=20, t=30, b=20)
+    )
+    return fig
 
 
 # ================= 核心数据流 =================
 @st.cache_data(ttl=60)
 def get_global_news():
-    """全球7x24小时事件嗅探"""
     url = "https://zhibo.sina.com.cn/api/zhibo/feed?page=1&page_size=60&zhibo_id=152&tag_id=0&dire=f&dpc=1"
     res = fetch_json(url, extra_headers={"Referer": "https://finance.sina.com.cn/"})
     news = []
     if res and res.get("result", {}).get("data", {}).get("feed", {}).get("list"):
         for item in res["result"]["data"]["feed"]["list"]:
-            text = re.sub(r'<[^>]+>', '', str(item.get("rich_text", "")).strip())
+            text = re.sub(r"<[^>]+>", "", str(item.get("rich_text", "")).strip())
             if len(text) > 15:
                 news.append(f"[{item.get('create_time', '')}] {text}")
     return news
@@ -330,32 +499,24 @@ def get_global_news():
 
 @st.cache_data(ttl=60)
 def get_market_pulse():
-    """获取宏观三大指数及外汇"""
     pulse = {}
     indices = {"上证指数": "1.000001", "深证成指": "0.399001", "创业板指": "0.399006"}
     for name, code in indices.items():
         url = f"https://push2.eastmoney.com/api/qt/stock/get?secid={code}&ut=fa5fd1943c7b386f172d6893dbfba10b&fltt=2&fields=f43,f170"
         res = fetch_json(url)
         if res and res.get("data"):
-            pulse[name] = {
-                "price": safe_float(res["data"].get("f43")),
-                "pct": safe_float(res["data"].get("f170"))
-            }
+            pulse[name] = {"price": safe_float(res["data"].get("f43")), "pct": safe_float(res["data"].get("f170"))}
 
     cnh_url = "https://push2.eastmoney.com/api/qt/stock/get?secid=133.USDCNH&ut=fa5fd1943c7b386f172d6893dbfba10b&fltt=2&fields=f43,f170"
     cnh_res = fetch_json(cnh_url)
     if cnh_res and cnh_res.get("data"):
-        pulse["USD/CNH(离岸)"] = {
-            "price": safe_float(cnh_res["data"].get("f43")),
-            "pct": safe_float(cnh_res["data"].get("f170"))
-        }
+        pulse["USD/CNH(离岸)"] = {"price": safe_float(cnh_res["data"].get("f43")), "pct": safe_float(cnh_res["data"].get("f170"))}
 
     return pulse
 
 
 @st.cache_data(ttl=300)
 def get_hot_blocks():
-    """获取当天涨幅最猛的热门板块"""
     try:
         df = ak.stock_board_industry_name_em()
         if df is not None and not df.empty:
@@ -367,7 +528,6 @@ def get_hot_blocks():
 
 
 def get_stock_quote(symbol):
-    """个股行情获取"""
     market = "1" if str(symbol).startswith(("6", "9", "5", "7")) else "0"
     url = f"https://push2.eastmoney.com/api/qt/stock/get?secid={market}.{symbol}&ut=fa5fd1943c7b386f172d6893dbfba10b&fltt=2&fields=f58,f43,f170,f116,f162,f168,f167"
     res = fetch_json(url)
@@ -387,7 +547,7 @@ def get_stock_quote(symbol):
     return None
 
 
-def get_kline(symbol, days=180):
+def get_kline(symbol, days=220):
     try:
         df = ak.stock_zh_a_hist(symbol=str(symbol), period="daily", adjust="qfq")
         if df is not None and not df.empty:
@@ -461,7 +621,7 @@ tab1, tab2, tab3, tab4 = st.tabs([
 ])
 
 
-# ================= Tab 1: 个股解析（增强版） =================
+# ================= Tab 1: 个股解析 =================
 with tab1:
     with st.container(border=True):
         st.markdown("#### 🔎 个股雷达锁定（增强技术结构版）")
@@ -469,7 +629,7 @@ with tab1:
         col1, col2 = st.columns([1, 1])
         with col1:
             symbol_input = st.text_input("标的代码", placeholder="例：600519")
-            analyze_btn = st.button("启动核心算法", type="primary", use_container_width=True)
+            analyze_btn = st.button("启动核心算法", type="primary", width="stretch")
 
         if analyze_btn:
             if not api_key:
@@ -479,7 +639,7 @@ with tab1:
             else:
                 with st.spinner("量子计算与数据提取中..."):
                     quote = get_stock_quote(symbol_input)
-                    df_kline = get_kline(symbol_input, days=180)
+                    df_kline = get_kline(symbol_input, days=220)
 
                 if not quote:
                     st.error("无法捕获行情资产。")
@@ -493,34 +653,44 @@ with tab1:
                     c3.metric("动态PE", f"{quote['pe']}")
                     c4.metric("换手率", f"{quote['turnover']:.2f}%")
 
-                    if df_kline is None or df_kline.empty or len(df_kline) < 60:
-                        st.warning("K线样本不足，无法进行增强技术分析。")
-                        if df_kline is not None and not df_kline.empty:
-                            temp = df_kline.copy()
-                            temp["date"] = temp["date"].dt.strftime("%Y-%m-%d")
-                            st.line_chart(temp.set_index("date")["close"])
+                    if df_kline is None or df_kline.empty or len(df_kline) < 20:
+                        st.warning("K线样本过少，仅展示基础行情分析。")
+                        with st.spinner("🧠 首席策略官撰写基础资产评估报告..."):
+                            prompt = f"""
+作为顶级私募经理，请基于股票 {name}({symbol_input}) 当前状态：
+现价 {price}，涨跌幅 {pct}%，市值 {quote['market_cap']} 亿，动态PE {quote['pe']}，换手率 {quote['turnover']}%。
+
+请输出：
+1. 基本面与估值诊断
+2. 资金意图预判
+3. 当前适合追涨、观察还是回避
+4. 风险提示
+
+要求：简洁、专业、像机构日报。
+"""
+                            st.markdown(call_ai(prompt))
                     else:
                         df_kline = add_indicators(df_kline)
                         tech = summarize_technicals(df_kline)
+                        smc = tech["smc"]
 
-                        chart_df = df_kline.copy()
-                        chart_df["date"] = chart_df["date"].dt.strftime("%Y-%m-%d")
-                        st.line_chart(chart_df.set_index("date")[["close", "ema20", "ema60", "ema120"]])
+                        fig = build_price_figure(df_kline)
+                        st.plotly_chart(fig, width="stretch")
 
-                        st.markdown("#### 📐 技术面结构总览")
+                        st.markdown("##### 🔬 核心技术指标与阻力测算")
                         t1, t2, t3, t4 = st.columns(4)
                         t1.metric("趋势", tech["trend"])
                         t2.metric("RSI14", f"{tech['rsi14']:.2f}" if pd.notna(tech["rsi14"]) else "N/A")
                         t3.metric("ATR14", f"{tech['atr14']:.2f}" if pd.notna(tech["atr14"]) else "N/A")
                         t4.metric("MACD状态", tech["macd_state"])
 
-                        s1, s2, s3, s4 = st.columns(4)
-                        s1.metric("布林状态", tech["bb_state"])
-                        s2.metric("量能状态", tech["vol_state"])
-                        s3.metric("结构状态", tech["bos_state"])
-                        s4.metric("流动性状态", tech["sweep_state"])
+                        t5, t6, t7, t8 = st.columns(4)
+                        t5.metric("布林状态", tech["bb_state"])
+                        t6.metric("量能状态", tech["vol_state"])
+                        t7.metric("BOS", tech["bos_state"])
+                        t8.metric("流动性扫盘", tech["sweep_state"])
 
-                        st.markdown("#### 🧩 FVG / 结构信息")
+                        st.markdown("##### 🧩 FVG / ICT / SMC 结构信息")
                         f1, f2 = st.columns(2)
 
                         with f1:
@@ -532,6 +702,13 @@ with tab1:
                             else:
                                 st.info("最近未检测到明显多头 FVG")
 
+                            if smc["latest_bull_ob"]:
+                                st.success(
+                                    f"最近多头OB：{smc['latest_bull_ob']['date']} | 区间 {smc['latest_bull_ob']['bottom']:.2f} - {smc['latest_bull_ob']['top']:.2f}"
+                                )
+                            else:
+                                st.info("最近未检测到明显多头 OB")
+
                         with f2:
                             bear_fvg = tech["nearest_bear_fvg"]
                             if bear_fvg:
@@ -541,11 +718,28 @@ with tab1:
                             else:
                                 st.info("最近未检测到明显空头 FVG")
 
+                            if smc["latest_bear_ob"]:
+                                st.error(
+                                    f"最近空头OB：{smc['latest_bear_ob']['date']} | 区间 {smc['latest_bear_ob']['bottom']:.2f} - {smc['latest_bear_ob']['top']:.2f}"
+                                )
+                            else:
+                                st.info("最近未检测到明显空头 OB")
+
+                        st.markdown("##### 🏗️ 市场结构补充")
+                        s1, s2, s3 = st.columns(3)
+                        eqh_count = len(smc["eqh"]) if smc["eqh"] else 0
+                        eql_count = len(smc["eql"]) if smc["eql"] else 0
+                        pd_zone = smc["pd_zone"]["zone"] if smc["pd_zone"] else "N/A"
+
+                        s1.metric("MSS", smc["mss"])
+                        s2.metric("EQH / EQL", f"{eqh_count} / {eql_count}")
+                        s3.metric("P/D Zone", pd_zone)
+
                         latest_close = tech["latest_close"]
                         support_zone = min(tech["ema20"], tech["ema60"])
                         pressure_zone = max(tech["ema20"], tech["ema60"])
 
-                        st.markdown("#### 🎯 动态支撑 / 压力")
+                        st.markdown("##### 🎯 动态支撑 / 压力")
                         z1, z2, z3 = st.columns(3)
                         z1.metric("最新收盘", f"{latest_close:.2f}")
                         z2.metric("动态支撑参考", f"{support_zone:.2f}")
@@ -559,6 +753,10 @@ with tab1:
 - ATR14：判断波动率，辅助止损空间评估
 - FVG（Fair Value Gap）：观察价格失衡区与回补机会
 - BOS（Break of Structure）：判断结构是否有效突破
+- Order Block：寻找潜在机构承接 / 抛压区域
+- MSS（Market Structure Shift）：趋势结构切换信号
+- EQH / EQL：识别流动性池
+- Premium / Discount Zone：判断当前位置贵 / 便宜
 - 流动性扫盘：识别假突破、诱多诱空
 """)
 
@@ -575,28 +773,36 @@ with tab1:
 - 市净率PB: {quote['pb']}
 - 换手率: {quote['turnover']}%
 
-【技术面核心指标】
+【经典技术指标】
 - 趋势: {tech['trend']}
 - RSI14: {tech['rsi14']}
 - ATR14: {tech['atr14']}
 - MACD状态: {tech['macd_state']}
 - 布林状态: {tech['bb_state']}
 - 量能状态: {tech['vol_state']}
-- BOS结构: {tech['bos_state']}
-- 流动性扫盘: {tech['sweep_state']}
 - EMA20: {tech['ema20']}
 - EMA60: {tech['ema60']}
 - EMA120: {tech['ema120']}
 - 最近收盘: {tech['latest_close']}
 
-【FVG结构】
+【结构分析】
+- BOS: {tech['bos_state']}
+- 流动性扫盘: {tech['sweep_state']}
+- MSS: {smc['mss']}
+- Premium/Discount: {smc['pd_zone']}
+- EQH: {smc['eqh']}
+- EQL: {smc['eql']}
+
+【FVG / Order Block】
 - 最近多头FVG: {tech['nearest_bull_fvg']}
 - 最近空头FVG: {tech['nearest_bear_fvg']}
+- 最近多头OB: {smc['latest_bull_ob']}
+- 最近空头OB: {smc['latest_bear_ob']}
 
 【请输出】
 1. 基本面与估值是否匹配当前走势
 2. 趋势、动量、波动、结构的综合判断
-3. FVG、BOS、流动性扫盘分别说明了什么
+3. FVG、OB、BOS、MSS、流动性扫盘分别说明了什么
 4. 当前更像趋势延续、回撤中的二次启动，还是冲高衰竭
 5. 给出交易计划：
    - 激进型做法
@@ -628,7 +834,10 @@ with tab2:
 
 实时数据：{str(pulse_data)}
 
-请输出：1. 市场全景定调（分化还是普涨）。2. 北向资金意愿推断（基于汇率）。3. 短期沙盘推演方向。
+请输出：
+1. 市场全景定调（分化还是普涨）
+2. 北向资金意愿推断（基于汇率）
+3. 短期沙盘推演方向
 """
                     st.markdown(call_ai(prompt, temperature=0.4))
 
@@ -647,7 +856,7 @@ with tab3:
                     blocks = get_hot_blocks()
                     if blocks:
                         df_blocks = pd.DataFrame(blocks)
-                        st.dataframe(df_blocks, use_container_width=True, hide_index=True)
+                        st.dataframe(df_blocks, width="stretch", hide_index=True)
 
                         with st.spinner("🧠 首席游资操盘手拆解底层逻辑..."):
                             blocks_str = "\n".join(
@@ -671,7 +880,7 @@ with tab3:
 # ================= Tab 4: 高阶情报终端 =================
 with tab4:
     st.markdown("#### 📡 机构级事件图谱与智能评级矩阵")
-    st.write("追踪彭博、推特、美联储、特朗普等宏观变量。已深度适配移动端，告别表格左右滑动烦恼。")
+    st.write("追踪彭博、推特、美联储、特朗普等宏观变量。已深度适配移动端。")
 
     if st.button("🚨 截获并解析全球突发", type="primary"):
         if not api_key:
