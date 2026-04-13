@@ -1,7 +1,6 @@
-import streamlit as st
+Import streamlit as st
 from groq import Groq
 import pandas as pd
-import numpy as np
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -45,7 +44,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("🏦 AI 智能量化投研终端")
-st.markdown(f"<div class='terminal-header'>TERMINAL BUILD v4.2.0 | SYS_TIME: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | ADVANCED TECH INDICATORS ADDED</div>", unsafe_allow_html=True)
+st.markdown(f"<div class='terminal-header'>TERMINAL BUILD v4.1.0 | SYS_TIME: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | MOBILE OPTIMIZED</div>", unsafe_allow_html=True)
 
 api_key = st.secrets.get("GROQ_API_KEY", "")
 
@@ -57,7 +56,6 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("### 📡 数据连通性")
     st.success("行情引流: ACTIVE")
-    st.success("先进技术指标: ACTIVE") # 新增状态
     st.success("7x24快讯: ACTIVE")
     st.success("板块扫描: ACTIVE")
 
@@ -69,7 +67,7 @@ USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:115.0) Gecko/20100101 Firefox/115.0",
-    "Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Mobile Safari/537.36"
+    "Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Mobile Safari/537.36" # 增加移动端UA
 ]
 
 @st.cache_resource
@@ -133,7 +131,7 @@ def get_market_pulse():
 
 @st.cache_data(ttl=300)
 def get_hot_blocks():
-    """获取当天涨幅最猛的热门板块"""
+    """获取当天涨幅最猛的热门板块 (被复活的核心功能)"""
     try:
         df = ak.stock_board_industry_name_em()
         if df is not None and not df.empty:
@@ -159,76 +157,14 @@ def get_stock_quote(symbol):
         }
     return None
 
-# 【加法修改】：将天数增加到 250 天，并返回开高低收，为了计算长线指标与 FVG
-def get_kline(symbol, days=250):
+def get_kline(symbol, days=60):
     try:
         df = ak.stock_zh_a_hist(symbol=str(symbol), period="daily", adjust="qfq")
         if df is not None and not df.empty:
-            df = df.rename(columns={"日期": "date", "开盘": "open", "收盘": "close", "最高": "high", "最低": "low", "成交量": "vol"})
-            return df[["date", "open", "close", "high", "low", "vol"]].tail(days)
+            df = df.rename(columns={"日期": "date", "收盘": "close"})
+            return df[["date", "close"]].tail(days)
     except: pass
     return None
-
-# ================= 新增：先进技术指标计算引擎 =================
-def calculate_advanced_indicators(df):
-    if df is None or len(df) < 20: 
-        return None
-    
-    df = df.copy()
-    df[['open', 'close', 'high', 'low']] = df[['open', 'close', 'high', 'low']].astype(float)
-    
-    # 1. 均线系统 (短线 MA20, 长线 MA120)
-    df['MA20'] = df['close'].rolling(window=20).mean()
-    df['MA120'] = df['close'].rolling(window=120).mean() if len(df) >= 120 else df['close'].rolling(window=len(df)).mean()
-    
-    # 2. RSI (14)
-    delta = df['close'].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-    rs = gain / loss
-    df['RSI'] = 100 - (100 / (1 + rs))
-    
-    # 3. MACD
-    exp1 = df['close'].ewm(span=12, adjust=False).mean()
-    exp2 = df['close'].ewm(span=26, adjust=False).mean()
-    df['MACD'] = exp1 - exp2
-    
-    # 4. FVG (公允价值缺口) - 扫描最近 15 个交易日
-    fvg_status = "未发现明显缺口"
-    fvg_gap = "N/A"
-    for i in range(len(df)-1, max(1, len(df)-15), -1):
-        if df['low'].iloc[i-2] > df['high'].iloc[i]:
-            fvg_status = "📉 熊市缺口 (Bearish FVG - 强抛压区)"
-            fvg_gap = f"{df['high'].iloc[i]:.2f} - {df['low'].iloc[i-2]:.2f}"
-            break
-        elif df['high'].iloc[i-2] < df['low'].iloc[i]:
-            fvg_status = "📈 牛市缺口 (Bullish FVG - 强支撑区)"
-            fvg_gap = f"{df['high'].iloc[i-2]:.2f} - {df['low'].iloc[i]:.2f}"
-            break
-
-    # 5. 短线支撑与压力 (近20日极值)
-    recent_20 = df.tail(20)
-    st_support = recent_20['low'].min()
-    st_resist = recent_20['high'].max()
-    
-    # 6. 长线支撑与压力 (近120日极值)
-    recent_120 = df.tail(120) if len(df) >= 120 else df
-    lt_support = recent_120['low'].min()
-    lt_resist = recent_120['high'].max()
-
-    last_row = df.iloc[-1]
-    return {
-        "rsi": safe_float(last_row['RSI']),
-        "macd": safe_float(last_row['MACD']),
-        "ma20": safe_float(last_row['MA20']),
-        "ma120": safe_float(last_row['MA120']),
-        "fvg_status": fvg_status,
-        "fvg_gap": fvg_gap,
-        "st_support": st_support,
-        "st_resist": st_resist,
-        "lt_support": lt_support,
-        "lt_resist": lt_resist
-    }
 
 # ================= AI 计算核心 =================
 def call_ai(prompt, model="llama-3.3-70b-versatile", temperature=0.3):
@@ -248,6 +184,7 @@ def call_ai(prompt, model="llama-3.3-70b-versatile", temperature=0.3):
 st.markdown("### 🌍 宏观市场实时看板")
 pulse_data = get_market_pulse()
 if pulse_data:
+    # 手机端自动换行，不再固定列宽
     dash_cols = st.columns(len(pulse_data))
     for idx, (key, data) in enumerate(pulse_data.items()):
         with dash_cols[idx]:
@@ -261,7 +198,7 @@ else:
 
 st.markdown("<br>", unsafe_allow_html=True)
 
-# ================= 终端功能选项卡 =================
+# ================= 终端功能选项卡 (恢复为 4 个 Tab) =================
 tab1, tab2, tab3, tab4 = st.tabs([
     "🎯 I. 个股标的解析", 
     "📈 II. 宏观大盘推演", 
@@ -269,81 +206,40 @@ tab1, tab2, tab3, tab4 = st.tabs([
     "🦅 IV. 高阶情报终端"
 ])
 
-# ----------------- Tab 1: 个股解析 (史诗级强化版) -----------------
+# ----------------- Tab 1: 个股解析 -----------------
 with tab1:
     with st.container(border=True):
-        st.markdown("#### 🔎 个股技术面与基本面雷达")
-        col1, col2 = st.columns([1, 1]) 
+        st.markdown("#### 🔎 个股雷达锁定")
+        col1, col2 = st.columns([1, 1]) # 手机端自适应更好
         with col1:
             symbol_input = st.text_input("标的代码", placeholder="例：600519")
-            analyze_btn = st.button("启动深度量化算法", type="primary", use_container_width=True)
+            analyze_btn = st.button("启动核心算法", type="primary", use_container_width=True)
             
         if analyze_btn:
             if not api_key: st.error("配置缺失: GROQ_API_KEY")
             elif len(symbol_input.strip()) != 6: st.warning("代码规范验证失败")
             else:
-                with st.spinner("量子计算与海量技术指标提取中..."):
+                with st.spinner("量子计算与数据提取中..."):
                     quote = get_stock_quote(symbol_input)
                     df_kline = get_kline(symbol_input)
                     
-                    # 【加法】：调用先进指标计算引擎
-                    tech_data = calculate_advanced_indicators(df_kline)
-                    
-                if not quote or tech_data is None:
-                    st.error("无法捕获行情资产或 K 线数据不足。")
+                if not quote:
+                    st.error("无法捕获行情资产。")
                 else:
                     st.markdown("---")
-                    # 动态兼容：优先取英文键，取不到就尝试取 akshare 常用的中文键，再取不到就用默认值兜底
-name = quote.get("name", quote.get("名称", "未知标的"))
-price = float(quote.get("price", quote.get("最新价", 0.0)))
-pct = float(quote.get("pct", quote.get("涨跌幅", 0.0)))
-
-# 市值通常 akshare 返回的是元，需要除以 1亿；如果原来已经是亿，做个兼容处理
-raw_mc = quote.get("market_cap", quote.get("总市值", 0))
-market_cap = raw_mc if raw_mc < 1000000 else raw_mc / 100000000
-
-pe = quote.get("pe", quote.get("市盈率-动态", "-"))
-turnover = float(quote.get("turnover", quote.get("换手率", 0.0)))
-
-# 1. 基础面板显示
-c1, c2, c3, c4 = st.columns(4)
-c1.metric(f"{name}", f"{price:.2f}", f"{pct:.2f}%")
-c2.metric("总市值(亿)", f"{market_cap:.1f}")
-c3.metric("动态PE", f"{pe}")
-c4.metric("换手率", f"{turnover:.2f}%")
+                    name, price, pct = quote["name"], quote["price"], quote["pct"]
+                    c1, c2, c3, c4 = st.columns(4)
+                    c1.metric(f"{name}", f"{price:.2f}", f"{pct:.2f}%")
+                    c2.metric("总市值(亿)", f"{quote['market_cap']:.1f}")
+                    c3.metric("动态PE", f"{quote['pe']}")
+                    c4.metric("换手率", f"{quote['turnover']:.2f}%")
                     
-                    # 【加法】：2. 高阶技术指标与支撑压力面板
-                    st.markdown("##### 🔬 核心技术指标与阻力测算")
-                    t1, t2, t3, t4 = st.columns(4)
-                    t1.metric("RSI (14)", f"{tech_data['rsi']:.1f}")
-                    t2.metric("MACD", f"{tech_data['macd']:.3f}")
-                    t3.metric("短线 支撑/压力", f"{tech_data['st_support']:.2f} / {tech_data['st_resist']:.2f}")
-                    t4.metric("长线 支撑/压力", f"{tech_data['lt_support']:.2f} / {tech_data['lt_resist']:.2f}")
+                    st.line_chart(df_kline.set_index("date")["close"] if df_kline is not None else [])
                     
-                    st.info(f"**FVG (公允价值缺口) 状态**: {tech_data['fvg_status']} | **磁吸区间**: {tech_data['fvg_gap']}")
-                    
-                    st.line_chart(df_kline.tail(60).set_index("date")["close"] if df_kline is not None else [])
-                    
-                    with st.spinner("🧠 首席策略官融合指标撰写实战报告..."):
-                        # 【加法】：增强版 Prompt，强制综合所有技术面给出买卖点
+                    with st.spinner("🧠 首席策略官撰写资产评估报告..."):
                         prompt = f"""
-                        作为顶级私募量化经理，基于资产 {name}({symbol_input}) 的最新状态：
-                        现价: {price}, 涨幅: {pct}%, 市值: {quote['market_cap']}亿, 换手: {quote['turnover']}%。
-                        
-                        【最新添加的技术面与量化指标】：
-                        - RSI(14): {tech_data['rsi']:.2f}
-                        - MACD: {tech_data['macd']:.3f}
-                        - MA20 (短线生命线): {tech_data['ma20']:.2f}
-                        - MA120 (长线牛熊线): {tech_data['ma120']:.2f}
-                        - FVG (公允价值缺口): {tech_data['fvg_status']} (区间: {tech_data['fvg_gap']})
-                        - 短线支撑位: {tech_data['st_support']:.2f} | 短线压力位: {tech_data['st_resist']:.2f}
-                        - 长线支撑位: {tech_data['lt_support']:.2f} | 长线压力位: {tech_data['lt_resist']:.2f}
-
-                        请综合以上所有数据，输出极度专业的深度量化分析，必须包含以下模块：
-                        1. 📊 **【趋势研判】**：综合 RSI、MACD 和均线系统 (MA20/120)，判定当前是多头、空头还是震荡，是否存在超买/超卖或背离？
-                        2. 🧲 **【主力资金与 FVG 分析】**：结合 FVG 缺口和换手率，分析主力资金的动向（磁吸效应回补缺口，还是强突破）？
-                        3. ⚔️ **【短线实战策略 (核心)】**：结合明确的短线支撑位与压力位，判定短期风险收益比，并给出明确的买卖点建议及防守止损位。
-                        4. 🛡️ **【长线价值中枢】**：结合长线支撑位与压力位，判定该股当前位置长线是否具备布局价值及大周期的底部预期。
+                        作为顶级私募经理，基于资产 {name}({symbol_input}) 的最新状态：现价: {price}, 涨幅: {pct}%, 市值: {quote['market_cap']}亿, 换手: {quote['turnover']}%。
+                        请输出专业量化分析：1.基本面与估值诊断。2.资金意图预判。3.支撑/阻力操作建议。
                         """
                         st.markdown(call_ai(prompt))
 
@@ -363,7 +259,7 @@ with tab2:
                     """
                     st.markdown(call_ai(prompt, temperature=0.4))
 
-# ----------------- Tab 3: 热点资金板块 -----------------
+# ----------------- Tab 3: 热点资金板块 (满血复活) -----------------
 with tab3:
     with st.container(border=True):
         st.markdown("#### 🔥 当日主力资金狂欢地 (Top 10)")
@@ -376,6 +272,7 @@ with tab3:
                     blocks = get_hot_blocks()
                     if blocks:
                         df_blocks = pd.DataFrame(blocks)
+                        # 手机端友好的表格展示
                         st.dataframe(df_blocks, use_container_width=True, hide_index=True)
                         
                         with st.spinner("🧠 首席游资操盘手拆解底层逻辑..."):
@@ -392,7 +289,7 @@ with tab3:
                     else:
                         st.error("获取板块数据失败，接口可能正处于熔断保护期。")
 
-# ----------------- Tab 4: 高阶情报终端 -----------------
+# ----------------- Tab 4: 高阶情报终端 (移动端卡片式重构) -----------------
 with tab4:
     st.markdown("#### 📡 机构级事件图谱与智能评级矩阵")
     st.write("追踪彭博、推特、美联储、特朗普等宏观变量。**已深度适配移动端，告别表格左右滑动烦恼！**")
@@ -410,6 +307,7 @@ with tab4:
                         st.text(news_text)
 
                     with st.spinner("🧠 情报官正在生成自适应移动端的情报卡片..."):
+                        # 终极提示词修改：强力禁止 Markdown 表格，改用卡片排版
                         prompt = f"""
 你现在是华尔街对冲基金的【首席地缘与宏观情报官】。
 我截获了全球金融市场的底层快讯流。请你挑选出最具爆炸性和市场影响力的 5-8 条动态。
