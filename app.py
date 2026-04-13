@@ -293,14 +293,24 @@ with tab1:
                     st.error("无法捕获行情资产或 K 线数据不足。")
                 else:
                     st.markdown("---")
-                    name, price, pct = quote["name"], quote["price"], quote["pct"]
-                    
-                    # 1. 基础面板
-                    c1, c2, c3, c4 = st.columns(4)
-                    c1.metric(f"{name}", f"{price:.2f}", f"{pct:.2f}%")
-                    c2.metric("总市值(亿)", f"{quote['market_cap']:.1f}")
-                    c3.metric("动态PE", f"{quote['pe']}")
-                    c4.metric("换手率", f"{quote['turnover']:.2f}%")
+                    # 动态兼容：优先取英文键，取不到就尝试取 akshare 常用的中文键，再取不到就用默认值兜底
+name = quote.get("name", quote.get("名称", "未知标的"))
+price = float(quote.get("price", quote.get("最新价", 0.0)))
+pct = float(quote.get("pct", quote.get("涨跌幅", 0.0)))
+
+# 市值通常 akshare 返回的是元，需要除以 1亿；如果原来已经是亿，做个兼容处理
+raw_mc = quote.get("market_cap", quote.get("总市值", 0))
+market_cap = raw_mc if raw_mc < 1000000 else raw_mc / 100000000
+
+pe = quote.get("pe", quote.get("市盈率-动态", "-"))
+turnover = float(quote.get("turnover", quote.get("换手率", 0.0)))
+
+# 1. 基础面板显示
+c1, c2, c3, c4 = st.columns(4)
+c1.metric(f"{name}", f"{price:.2f}", f"{pct:.2f}%")
+c2.metric("总市值(亿)", f"{market_cap:.1f}")
+c3.metric("动态PE", f"{pe}")
+c4.metric("换手率", f"{turnover:.2f}%")
                     
                     # 【加法】：2. 高阶技术指标与支撑压力面板
                     st.markdown("##### 🔬 核心技术指标与阻力测算")
