@@ -2,6 +2,8 @@ streamlit
 groq
 pandas
 requests
+urllib3
 akshare
 tushare
+baostock
 plotly
