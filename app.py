@@ -7,6 +7,7 @@ from urllib3.util.retry import Retry
 import re
 import akshare as ak
 import tushare as ts
+import baostock as bs  # <--- 新增 Baostock 接口
 import random
 import time
 from datetime import datetime
@@ -50,7 +51,7 @@ st.markdown("""
 
 st.title("🏦 AI 智能量化投研终端")
 st.markdown(
-    f"<div class='terminal-header'>TERMINAL BUILD v6.1.0 | SYS_TIME: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | MOBILE OPTIMIZED</div>",
+    f"<div class='terminal-header'>TERMINAL BUILD v6.2.0 | SYS_TIME: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | BAOSTOCK INTEGRATED</div>",
     unsafe_allow_html=True
 )
 
@@ -67,7 +68,7 @@ with st.sidebar:
     st.success("行情引流 : ACTIVE")
     st.success("7x24快讯 : ACTIVE")
     st.success("板块扫描 : ACTIVE (带熔断保护)")
-    st.success("技术结构引擎 : ACTIVE")
+    st.success("技术结构引擎 : ACTIVE (Baostock就绪)")
 
 if ts_token:
     ts.set_token(ts_token)
@@ -530,8 +531,10 @@ def get_kline(symbol, days=220):
     
     start_str = start_date.strftime("%Y%m%d")
     end_str = end_date.strftime("%Y%m%d")
+    start_str_bs = start_date.strftime("%Y-%m-%d")
+    end_str_bs = end_date.strftime("%Y-%m-%d")
 
-    # 1) AKShare 前复权 (带截流)
+    # 1) AKShare 前复权 (首发主力)
     try:
         df = ak.stock_zh_a_hist(symbol=str(symbol), period="daily", start_date=start_str, end_date=end_str, adjust="qfq")
         if df is not None and not df.empty:
@@ -553,7 +556,7 @@ def get_kline(symbol, days=220):
         if DEBUG_MODE:
             st.warning(f"AKShare qfq 降级失败: {e}")
 
-    # 2) AKShare 不复权 (作为第一次降级)
+    # 2) AKShare 不复权 (第一降级)
     try:
         df = ak.stock_zh_a_hist(symbol=str(symbol), period="daily", start_date=start_str, end_date=end_str, adjust="")
         if df is not None and not df.empty:
@@ -574,7 +577,39 @@ def get_kline(symbol, days=220):
         if DEBUG_MODE:
             st.warning(f"AKShare raw 降级失败: {e}")
 
-    # 3) Tushare 终极兜底
+    # 3) Baostock 接口 (第二降级 / 强力补充)
+    try:
+        bs.login() # 登录 baostock
+        bs_code = f"sh.{symbol}" if str(symbol).startswith(("6", "9", "5", "7")) else f"sz.{symbol}"
+        rs = bs.query_history_k_data_plus(
+            bs_code,
+            "date,open,high,low,close,volume",
+            start_date=start_str_bs, end_date=end_str_bs,
+            frequency="d", adjustflag="2" # 2: 前复权
+        )
+        data_list = []
+        while (rs.error_code == '0') & rs.next():
+            data_list.append(rs.get_row_data())
+        bs.logout() # 退出登录
+        
+        if data_list:
+            df = pd.DataFrame(data_list, columns=rs.fields)
+            keep_cols = ["date", "open", "high", "low", "close", "volume"]
+            df["date"] = pd.to_datetime(df["date"])
+            for col in ["open", "high", "low", "close", "volume"]:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+            df = df.dropna().sort_values("date").reset_index(drop=True)
+            if len(df) > 0:
+                return df.tail(days)
+    except Exception as e:
+        if DEBUG_MODE:
+            st.warning(f"Baostock 降级失败: {e}")
+        try:
+            bs.logout()
+        except:
+            pass
+
+    # 4) Tushare (终极兜底)
     try:
         if ts_token:
             pro = ts.pro_api()
@@ -598,7 +633,7 @@ def get_kline(symbol, days=220):
                         return df.tail(days)
     except Exception as e:
         if DEBUG_MODE:
-            st.warning(f"Tushare 失败: {e}")
+            st.warning(f"Tushare 兜底失败: {e}")
             
     return None
 
@@ -654,7 +689,7 @@ with tab1:
             elif len(symbol_input.strip()) != 6:
                 st.warning("代码规范验证失败")
             else:
-                with st.spinner("量子计算与数据提取中..."):
+                with st.spinner("量子计算与数据提取中 (启用四重行情数据引擎)..."):
                     quote = get_stock_quote(symbol_input)
                     df_kline = get_kline(symbol_input, days=220)
                     
