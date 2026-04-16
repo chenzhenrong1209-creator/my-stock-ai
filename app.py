@@ -21,6 +21,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# 引入自定义 CSS，优化移动端与全局样式
 st.markdown("""
     <style>
     .stTabs [data-baseweb="tab-list"] {
@@ -46,16 +47,29 @@ st.markdown("""
     [data-testid="stMetricValue"] {
         font-size: 1.5rem;
     }
+    .news-card {
+        background-color: rgba(30, 30, 30, 0.05);
+        border-left: 4px solid #ff4b4b;
+        padding: 15px;
+        margin-bottom: 15px;
+        border-radius: 0 8px 8px 0;
+    }
     </style>
 """, unsafe_allow_html=True)
 
 st.title("🏦 AI 智能量化投研终端")
 st.markdown(
-    f"<div class='terminal-header'>TERMINAL BUILD v6.2.1 | SYS_TIME: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | BAOSTOCK + INDEX HOTFIX</div>",
+    f"<div class='terminal-header'>TERMINAL BUILD v6.3.0 | SYS_TIME: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | CORE OPTIMIZED</div>",
     unsafe_allow_html=True
 )
 
 api_key = st.secrets.get("GROQ_API_KEY", "")
+
+# 初始化全局会话状态 (Session State) 用于缓存数据，防止页面刷新丢失
+if "global_report" not in st.session_state:
+    st.session_state.global_report = None
+if "raw_news_cache" not in st.session_state:
+    st.session_state.raw_news_cache = ""
 
 # ================= 侧边栏 =================
 with st.sidebar:
@@ -120,19 +134,16 @@ def fetch_json(url, timeout=5, extra_headers=None):
 # ================= 技术面核心函数 =================
 def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
-    # EMA
     df["ema20"] = df["close"].ewm(span=20, adjust=False).mean()
     df["ema60"] = df["close"].ewm(span=60, adjust=False).mean()
     df["ema120"] = df["close"].ewm(span=120, adjust=False).mean()
     
-    # MACD
     ema12 = df["close"].ewm(span=12, adjust=False).mean()
     ema26 = df["close"].ewm(span=26, adjust=False).mean()
     df["macd"] = ema12 - ema26
     df["macd_signal"] = df["macd"].ewm(span=9, adjust=False).mean()
     df["macd_hist"] = df["macd"] - df["macd_signal"]
     
-    # RSI14
     delta = df["close"].diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
@@ -141,7 +152,6 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     rs = avg_gain / avg_loss.replace(0, pd.NA)
     df["rsi14"] = 100 - (100 / (1 + rs))
     
-    # ATR14
     prev_close = df["close"].shift(1)
     tr1 = df["high"] - df["low"]
     tr2 = (df["high"] - prev_close).abs()
@@ -149,14 +159,12 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["tr"] = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
     df["atr14"] = df["tr"].rolling(14).mean()
     
-    # Bollinger
     ma20 = df["close"].rolling(20).mean()
     std20 = df["close"].rolling(20).std()
     df["bb_mid"] = ma20
     df["bb_up"] = ma20 + 2 * std20
     df["bb_low"] = ma20 - 2 * std20
     
-    # Volume MA
     df["vol_ma20"] = df["volume"].rolling(20).mean()
     return df
 
@@ -166,10 +174,8 @@ def detect_swings(df: pd.DataFrame, left=2, right=2):
     if len(df) < left + right + 1:
         return swing_highs, swing_lows
     for i in range(left, len(df) - right):
-        # 修复点：强制使用绝对索引 .iloc，无视标签索引错误
         high = df["high"].iloc[i]
         low = df["low"].iloc[i]
-        # .iloc 切片的右边界是独占的，所以需要 i+right+1
         if high == df["high"].iloc[i-left : i+right+1].max():
             swing_highs.append((i, high))
         if low == df["low"].iloc[i-left : i+right+1].min():
@@ -185,20 +191,14 @@ def detect_fvg(df: pd.DataFrame, max_zones=5):
         c3 = df.iloc[i]
         if c3["low"] > c1["high"]:
             zones.append({
-                "type": "bullish",
-                "start_idx": i - 2,
-                "end_idx": i,
-                "top": c3["low"],
-                "bottom": c1["high"],
+                "type": "bullish", "start_idx": i - 2, "end_idx": i,
+                "top": c3["low"], "bottom": c1["high"],
                 "date": str(pd.to_datetime(c3["date"]).date())
             })
         if c3["high"] < c1["low"]:
             zones.append({
-                "type": "bearish",
-                "start_idx": i - 2,
-                "end_idx": i,
-                "top": c1["low"],
-                "bottom": c3["high"],
+                "type": "bearish", "start_idx": i - 2, "end_idx": i,
+                "top": c1["low"], "bottom": c3["high"],
                 "date": str(pd.to_datetime(c3["date"]).date())
             })
     return zones[-max_zones:]
@@ -227,9 +227,9 @@ def detect_bos(df: pd.DataFrame):
     last_swing_low = swing_lows[-1][1]
     
     if latest_close > last_swing_high:
-        return "向上 BOS (结构突破)"
+        return "向上 BOS"
     if latest_close < last_swing_low:
-        return "向下 BOS (结构破坏)"
+        return "向下 BOS"
     return "结构未突破"
 
 def detect_order_blocks(df: pd.DataFrame, lookback=30, max_zones=4):
@@ -248,33 +248,26 @@ def detect_order_blocks(df: pd.DataFrame, lookback=30, max_zones=4):
             
         if curr["close"] < curr["open"] and nxt["close"] > curr["high"] and body_curr < atr * 1.2:
             zones.append({
-                "type": "bullish_ob",
-                "date": str(pd.to_datetime(curr["date"]).date()),
-                "top": max(curr["open"], curr["close"]),
-                "bottom": min(curr["open"], curr["close"])
+                "type": "bullish_ob", "date": str(pd.to_datetime(curr["date"]).date()),
+                "top": max(curr["open"], curr["close"]), "bottom": min(curr["open"], curr["close"])
             })
             
         if curr["close"] > curr["open"] and nxt["close"] < curr["low"] and body_curr < atr * 1.2:
             zones.append({
-                "type": "bearish_ob",
-                "date": str(pd.to_datetime(curr["date"]).date()),
-                "top": max(curr["open"], curr["close"]),
-                "bottom": min(curr["open"], curr["close"])
+                "type": "bearish_ob", "date": str(pd.to_datetime(curr["date"]).date()),
+                "top": max(curr["open"], curr["close"]), "bottom": min(curr["open"], curr["close"])
             })
     return zones[-max_zones:]
 
 def detect_equal_high_low(df: pd.DataFrame, tolerance=0.003):
     swing_highs, swing_lows = detect_swings(df)
-    eqh = []
-    eql = []
+    eqh, eql = [], []
     for i in range(len(swing_highs) - 1):
-        h1 = swing_highs[i][1]
-        h2 = swing_highs[i + 1][1]
+        h1, h2 = swing_highs[i][1], swing_highs[i + 1][1]
         if h1 > 0 and abs(h1 - h2) / h1 <= tolerance:
             eqh.append((swing_highs[i], swing_highs[i + 1]))
     for i in range(len(swing_lows) - 1):
-        l1 = swing_lows[i][1]
-        l2 = swing_lows[i + 1][1]
+        l1, l2 = swing_lows[i][1], swing_lows[i + 1][1]
         if l1 > 0 and abs(l1 - l2) / l1 <= tolerance:
             eql.append((swing_lows[i], swing_lows[i + 1]))
     return eqh[-3:], eql[-3:]
@@ -284,15 +277,13 @@ def detect_mss(df: pd.DataFrame):
     if len(swing_highs) < 2 or len(swing_lows) < 2 or len(df) < 2:
         return "样本不足"
         
-    latest = df.iloc[-1]
-    prev = df.iloc[-2]
-    last_high = swing_highs[-1][1]
-    last_low = swing_lows[-1][1]
+    latest, prev = df.iloc[-1], df.iloc[-2]
+    last_high, last_low = swing_highs[-1][1], swing_lows[-1][1]
     
     if prev["close"] < last_high and latest["close"] > last_high:
-        return "Bullish MSS (多头结构转换)"
+        return "Bullish MSS"
     if prev["close"] > last_low and latest["close"] < last_low:
-        return "Bearish MSS (空头结构转换)"
+        return "Bearish MSS"
     return "暂无明显 MSS"
 
 def get_premium_discount_zone(df: pd.DataFrame, lookback=60):
@@ -308,29 +299,17 @@ def get_premium_discount_zone(df: pd.DataFrame, lookback=60):
         zone = "Premium Zone"
     elif latest_close < eq:
         zone = "Discount Zone"
-    return {
-        "range_high": range_high,
-        "range_low": range_low,
-        "equilibrium": eq,
-        "zone": zone
-    }
+    return {"range_high": range_high, "range_low": range_low, "equilibrium": eq, "zone": zone}
 
 def build_smc_summary(df: pd.DataFrame):
     obs = detect_order_blocks(df)
-    eqh, eql = detect_equal_high_low(df)
-    mss = detect_mss(df)
-    pd_zone = get_premium_discount_zone(df)
-    
-    latest_bull_ob = next((z for z in reversed(obs) if z["type"] == "bullish_ob"), None)
-    latest_bear_ob = next((z for z in reversed(obs) if z["type"] == "bearish_ob"), None)
-    
     return {
-        "latest_bull_ob": latest_bull_ob,
-        "latest_bear_ob": latest_bear_ob,
-        "eqh": eqh,
-        "eql": eql,
-        "mss": mss,
-        "pd_zone": pd_zone
+        "latest_bull_ob": next((z for z in reversed(obs) if z["type"] == "bullish_ob"), None),
+        "latest_bear_ob": next((z for z in reversed(obs) if z["type"] == "bearish_ob"), None),
+        "eqh": detect_equal_high_low(df)[0],
+        "eql": detect_equal_high_low(df)[1],
+        "mss": detect_mss(df),
+        "pd_zone": get_premium_discount_zone(df)
     }
 
 def summarize_technicals(df: pd.DataFrame):
@@ -338,22 +317,16 @@ def summarize_technicals(df: pd.DataFrame):
     prev = df.iloc[-2] if len(df) >= 2 else latest
     
     trend = "震荡"
-    if latest["close"] > latest["ema20"] > latest["ema60"]:
-        trend = "多头趋势"
-    elif latest["close"] < latest["ema20"] < latest["ema60"]:
-        trend = "空头趋势"
+    if latest["close"] > latest["ema20"] > latest["ema60"]: trend = "多头趋势"
+    elif latest["close"] < latest["ema20"] < latest["ema60"]: trend = "空头趋势"
         
     momentum = "中性"
     rsi = latest["rsi14"]
     if pd.notna(rsi):
-        if rsi >= 70:
-            momentum = "超买"
-        elif rsi <= 30:
-            momentum = "超卖"
-        elif rsi > 55:
-            momentum = "偏强"
-        elif rsi < 45:
-            momentum = "偏弱"
+        if rsi >= 70: momentum = "超买"
+        elif rsi <= 30: momentum = "超卖"
+        elif rsi > 55: momentum = "偏强"
+        elif rsi < 45: momentum = "偏弱"
             
     macd_state = "中性"
     if latest["macd"] > latest["macd_signal"] and latest["macd_hist"] > prev["macd_hist"]:
@@ -362,96 +335,47 @@ def summarize_technicals(df: pd.DataFrame):
         macd_state = "死叉后走弱"
         
     bb_state = "带内运行"
-    if latest["close"] > latest["bb_up"]:
-        bb_state = "突破布林上轨"
-    elif latest["close"] < latest["bb_low"]:
-        bb_state = "跌破布林下轨"
+    if latest["close"] > latest["bb_up"]: bb_state = "突破上轨"
+    elif latest["close"] < latest["bb_low"]: bb_state = "跌破下轨"
         
     vol_state = "量能平稳"
     if pd.notna(latest["vol_ma20"]) and latest["vol_ma20"] > 0:
-        if latest["volume"] > latest["vol_ma20"] * 1.8:
-            vol_state = "显著放量"
-        elif latest["volume"] < latest["vol_ma20"] * 0.7:
-            vol_state = "明显缩量"
+        if latest["volume"] > latest["vol_ma20"] * 1.8: vol_state = "显著放量"
+        elif latest["volume"] < latest["vol_ma20"] * 0.7: vol_state = "明显缩量"
             
     fvg_zones = detect_fvg(df)
-    bos_state = detect_bos(df)
-    sweep_state = detect_liquidity_sweep(df)
-    
-    nearest_bull_fvg = next((z for z in reversed(fvg_zones) if z["type"] == "bullish"), None)
-    nearest_bear_fvg = next((z for z in reversed(fvg_zones) if z["type"] == "bearish"), None)
-    
-    smc = build_smc_summary(df)
     
     return {
-        "trend": trend,
-        "momentum": momentum,
-        "macd_state": macd_state,
-        "bb_state": bb_state,
-        "vol_state": vol_state,
-        "atr14": latest["atr14"],
-        "rsi14": latest["rsi14"],
-        "bos_state": bos_state,
-        "sweep_state": sweep_state,
-        "nearest_bull_fvg": nearest_bull_fvg,
-        "nearest_bear_fvg": nearest_bear_fvg,
-        "latest_close": latest["close"],
-        "ema20": latest["ema20"],
-        "ema60": latest["ema60"],
-        "ema120": latest["ema120"],
-        "smc": smc
+        "trend": trend, "momentum": momentum, "macd_state": macd_state,
+        "bb_state": bb_state, "vol_state": vol_state, "atr14": latest["atr14"],
+        "rsi14": latest["rsi14"], "bos_state": detect_bos(df), "sweep_state": detect_liquidity_sweep(df),
+        "nearest_bull_fvg": next((z for z in reversed(fvg_zones) if z["type"] == "bullish"), None),
+        "nearest_bear_fvg": next((z for z in reversed(fvg_zones) if z["type"] == "bearish"), None),
+        "latest_close": latest["close"], "ema20": latest["ema20"],
+        "ema60": latest["ema60"], "ema120": latest["ema120"], "smc": build_smc_summary(df)
     }
 
 def build_price_figure(df: pd.DataFrame):
     plot_df = df.copy()
     plot_df["date_str"] = plot_df["date"].dt.strftime("%Y-%m-%d")
-    
     fig = go.Figure()
     
     fig.add_trace(go.Candlestick(
-        x=plot_df["date_str"],
-        open=plot_df["open"],
-        high=plot_df["high"],
-        low=plot_df["low"],
-        close=plot_df["close"],
-        name="K线"
+        x=plot_df["date_str"], open=plot_df["open"], high=plot_df["high"],
+        low=plot_df["low"], close=plot_df["close"], name="K线"
     ))
-    
-    fig.add_trace(go.Scatter(
-        x=plot_df["date_str"], y=plot_df["ema20"],
-        mode="lines", name="EMA20"
-    ))
-    fig.add_trace(go.Scatter(
-        x=plot_df["date_str"], y=plot_df["ema60"],
-        mode="lines", name="EMA60"
-    ))
-    fig.add_trace(go.Scatter(
-        x=plot_df["date_str"], y=plot_df["ema120"],
-        mode="lines", name="EMA120"
-    ))
+    fig.add_trace(go.Scatter(x=plot_df["date_str"], y=plot_df["ema20"], mode="lines", name="EMA20"))
+    fig.add_trace(go.Scatter(x=plot_df["date_str"], y=plot_df["ema60"], mode="lines", name="EMA60"))
+    fig.add_trace(go.Scatter(x=plot_df["date_str"], y=plot_df["ema120"], mode="lines", name="EMA120"))
     
     for zone in detect_fvg(plot_df, max_zones=4):
         start_idx = zone["start_idx"]
         end_idx = min(len(plot_df) - 1, start_idx + 12)
-        x0 = plot_df.iloc[start_idx]["date_str"]
-        x1 = plot_df.iloc[end_idx]["date_str"]
+        x0, x1 = plot_df.iloc[start_idx]["date_str"], plot_df.iloc[end_idx]["date_str"]
         fillcolor = "rgba(0, 200, 0, 0.15)" if zone["type"] == "bullish" else "rgba(200, 0, 0, 0.15)"
-        fig.add_shape(
-            type="rect",
-            x0=x0, x1=x1,
-            y0=zone["bottom"], y1=zone["top"],
-            line=dict(width=0),
-            fillcolor=fillcolor
-        )
+        fig.add_shape(type="rect", x0=x0, x1=x1, y0=zone["bottom"], y1=zone["top"], line=dict(width=0), fillcolor=fillcolor)
         
-    fig.update_layout(
-        height=520,
-        xaxis_title="日期",
-        yaxis_title="价格",
-        xaxis_rangeslider_visible=False,
-        legend_title="图层",
-        margin=dict(l=20, r=20, t=30, b=20)
-    )
+    fig.update_layout(height=520, xaxis_title="日期", yaxis_title="价格", xaxis_rangeslider_visible=False, margin=dict(l=20, r=20, t=30, b=20))
     return fig
 
 # ================= 核心数据流 =================
@@ -488,21 +412,14 @@ def get_hot_blocks():
     try:
         df = ak.stock_board_industry_name_em()
         if df is not None and not df.empty:
-            top_blocks = df.sort_values(by="涨跌幅", ascending=False).head(10)
-            return top_blocks[["板块名称", "涨跌幅", "上涨家数", "下跌家数", "领涨股票"]].to_dict('records')
-    except Exception:
-        pass
-
+            return df.sort_values(by="涨跌幅", ascending=False).head(10)[["板块名称", "涨跌幅", "上涨家数", "下跌家数", "领涨股票"]].to_dict('records')
+    except: pass
     time.sleep(1) 
-    
     try:
         df = ak.stock_board_concept_name_em()
         if df is not None and not df.empty:
-            top_blocks = df.sort_values(by="涨跌幅", ascending=False).head(10)
-            return top_blocks[["板块名称", "涨跌幅", "上涨家数", "下跌家数", "领涨股票"]].to_dict('records')
-    except Exception:
-        pass
-        
+            return df.sort_values(by="涨跌幅", ascending=False).head(10)[["板块名称", "涨跌幅", "上涨家数", "下跌家数", "领涨股票"]].to_dict('records')
+    except: pass
     return None
 
 def get_stock_quote(symbol):
@@ -512,10 +429,9 @@ def get_stock_quote(symbol):
     if res and res.get("data"):
         d = res["data"]
         raw_price = safe_float(d.get("f43"))
-        price = raw_price / 1000 if raw_price > 1000 else raw_price
         return {
             "name": d.get("f58", "未知"),
-            "price": price,
+            "price": raw_price / 1000 if raw_price > 1000 else raw_price,
             "pct": safe_float(d.get("f170")),
             "market_cap": safe_float(d.get("f116")) / 100000000,
             "pe": d.get("f162", "-"),
@@ -527,116 +443,60 @@ def get_stock_quote(symbol):
 def get_kline(symbol, days=220):
     end_date = datetime.now()
     start_date = end_date - pd.Timedelta(days=days + 150) 
-    
-    start_str = start_date.strftime("%Y%m%d")
-    end_str = end_date.strftime("%Y%m%d")
-    start_str_bs = start_date.strftime("%Y-%m-%d")
-    end_str_bs = end_date.strftime("%Y-%m-%d")
+    start_str, end_str = start_date.strftime("%Y%m%d"), end_date.strftime("%Y%m%d")
+    start_str_bs, end_str_bs = start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d")
 
-    # 1) AKShare 前复权
     try:
         df = ak.stock_zh_a_hist(symbol=str(symbol), period="daily", start_date=start_str, end_date=end_str, adjust="qfq")
         if df is not None and not df.empty:
-            df = df.rename(columns={
-                "日期": "date", "开盘": "open", "收盘": "close",
-                "最高": "high", "最低": "low", "成交量": "volume",
-                "成交额": "amount", "换手率": "turnover_rate"
-            })
-            keep_cols = ["date", "open", "high", "low", "close", "volume", "turnover_rate"]
-            if all(col in df.columns for col in keep_cols):
-                df = df[keep_cols].copy()
+            df = df.rename(columns={"日期": "date", "开盘": "open", "收盘": "close", "最高": "high", "最低": "low", "成交量": "volume", "换手率": "turnover_rate"})
+            if all(col in df.columns for col in ["date", "open", "high", "low", "close", "volume"]):
                 df["date"] = pd.to_datetime(df["date"])
-                for col in ["open", "high", "low", "close", "volume", "turnover_rate"]:
-                    df[col] = pd.to_numeric(df[col], errors="coerce")
+                for col in ["open", "high", "low", "close", "volume"]: df[col] = pd.to_numeric(df[col], errors="coerce")
                 df = df.dropna().reset_index(drop=True)
-                if len(df) > 0:
-                    # 修复点：强制重置索引，消除潜在的 Key Error
-                    return df.tail(days).reset_index(drop=True)
-    except Exception as e:
-        if DEBUG_MODE:
-            st.warning(f"AKShare qfq 降级失败: {e}")
+                if len(df) > 0: return df.tail(days).reset_index(drop=True)
+    except: pass
 
-    # 2) AKShare 不复权
     try:
         df = ak.stock_zh_a_hist(symbol=str(symbol), period="daily", start_date=start_str, end_date=end_str, adjust="")
         if df is not None and not df.empty:
-            df = df.rename(columns={
-                "日期": "date", "开盘": "open", "收盘": "close",
-                "最高": "high", "最低": "low", "成交量": "volume"
-            })
-            keep_cols = ["date", "open", "high", "low", "close", "volume"]
-            if all(col in df.columns for col in keep_cols):
-                df = df[keep_cols].copy()
+            df = df.rename(columns={"日期": "date", "开盘": "open", "收盘": "close", "最高": "high", "最低": "low", "成交量": "volume"})
+            if all(col in df.columns for col in ["date", "open", "high", "low", "close", "volume"]):
                 df["date"] = pd.to_datetime(df["date"])
-                for col in ["open", "high", "low", "close", "volume"]:
-                    df[col] = pd.to_numeric(df[col], errors="coerce")
+                for col in ["open", "high", "low", "close", "volume"]: df[col] = pd.to_numeric(df[col], errors="coerce")
                 df = df.dropna().reset_index(drop=True)
-                if len(df) > 0:
-                    # 修复点：强制重置索引
-                    return df.tail(days).reset_index(drop=True)
-    except Exception as e:
-        if DEBUG_MODE:
-            st.warning(f"AKShare raw 降级失败: {e}")
+                if len(df) > 0: return df.tail(days).reset_index(drop=True)
+    except: pass
 
-    # 3) Baostock 接口
     try:
         bs.login() 
         bs_code = f"sh.{symbol}" if str(symbol).startswith(("6", "9", "5", "7")) else f"sz.{symbol}"
-        rs = bs.query_history_k_data_plus(
-            bs_code,
-            "date,open,high,low,close,volume",
-            start_date=start_str_bs, end_date=end_str_bs,
-            frequency="d", adjustflag="2" 
-        )
+        rs = bs.query_history_k_data_plus(bs_code, "date,open,high,low,close,volume", start_date=start_str_bs, end_date=end_str_bs, frequency="d", adjustflag="2")
         data_list = []
-        while (rs.error_code == '0') & rs.next():
-            data_list.append(rs.get_row_data())
+        while (rs.error_code == '0') & rs.next(): data_list.append(rs.get_row_data())
         bs.logout() 
-        
         if data_list:
             df = pd.DataFrame(data_list, columns=rs.fields)
-            keep_cols = ["date", "open", "high", "low", "close", "volume"]
             df["date"] = pd.to_datetime(df["date"])
-            for col in ["open", "high", "low", "close", "volume"]:
-                df[col] = pd.to_numeric(df[col], errors="coerce")
+            for col in ["open", "high", "low", "close", "volume"]: df[col] = pd.to_numeric(df[col], errors="coerce")
             df = df.dropna().sort_values("date").reset_index(drop=True)
-            if len(df) > 0:
-                # 修复点：强制重置索引
-                return df.tail(days).reset_index(drop=True)
-    except Exception as e:
-        if DEBUG_MODE:
-            st.warning(f"Baostock 降级失败: {e}")
-        try:
-            bs.logout()
-        except:
-            pass
+            if len(df) > 0: return df.tail(days).reset_index(drop=True)
+    except:
+        try: bs.logout()
+        except: pass
 
-    # 4) Tushare
     try:
         if ts_token:
             pro = ts.pro_api()
             market = ".SH" if str(symbol).startswith(("6", "9", "5", "7")) else ".SZ"
-            ts_code = f"{symbol}{market}"
-            df = pro.daily(ts_code=ts_code, start_date=start_str, end_date=end_str)
+            df = pro.daily(ts_code=f"{symbol}{market}", start_date=start_str, end_date=end_str)
             if df is not None and not df.empty:
-                df = df.rename(columns={
-                    "trade_date": "date", "open": "open",
-                    "high": "high", "low": "low",
-                    "close": "close", "vol": "volume"
-                })
-                keep_cols = ["date", "open", "high", "low", "close", "volume"]
-                if all(col in df.columns for col in keep_cols):
-                    df = df[keep_cols].copy()
-                    df["date"] = pd.to_datetime(df["date"], format="%Y%m%d")
-                    for col in ["open", "high", "low", "close", "volume"]:
-                        df[col] = pd.to_numeric(df[col], errors="coerce")
-                    df = df.dropna().sort_values("date").reset_index(drop=True)
-                    if len(df) > 0:
-                        # 修复点：强制重置索引
-                        return df.tail(days).reset_index(drop=True)
-    except Exception as e:
-        if DEBUG_MODE:
-            st.warning(f"Tushare 兜底失败: {e}")
+                df = df.rename(columns={"trade_date": "date", "vol": "volume"})
+                df["date"] = pd.to_datetime(df["date"], format="%Y%m%d")
+                for col in ["open", "high", "low", "close", "volume"]: df[col] = pd.to_numeric(df[col], errors="coerce")
+                df = df.dropna().sort_values("date").reset_index(drop=True)
+                if len(df) > 0: return df.tail(days).reset_index(drop=True)
+    except: pass
             
     return None
 
@@ -692,7 +552,7 @@ with tab1:
             elif len(symbol_input.strip()) != 6:
                 st.warning("代码规范验证失败")
             else:
-                with st.spinner("量子计算与数据提取中 (启用四重行情数据引擎)..."):
+                with st.spinner("量子计算与数据提取中..."):
                     quote = get_stock_quote(symbol_input)
                     df_kline = get_kline(symbol_input, days=220)
                     
@@ -707,237 +567,133 @@ with tab1:
                     c3.metric("动态PE", f"{quote['pe']}")
                     c4.metric("换手率", f"{quote['turnover']:.2f}%")
 
-                    # ===== 动态容错降级分析逻辑 =====
                     if df_kline is None or len(df_kline) < 15:
-                        st.warning("获取到的有效 K 线极少，仅能通过最新行情进行轻量化推演。")
+                        st.warning("有效 K 线极少，仅进行轻量推演。")
                         with st.spinner("🧠 首席策略官撰写资产评估报告..."):
-                            prompt = f"""
-                            作为顶级私募经理，请基于股票 {name}({symbol_input}) 当前状态：
-                            现价 {price}，涨跌幅 {pct}%，市值 {quote['market_cap']} 亿，动态 PE {quote['pe']}，换手率 {quote['turnover']}%。
-                            【请重点进行以下维度的分析】：
-                            1. 🏦 **基本面诊断与资金意图盲猜**。
-                            2. ⚔️ **布局进入与离场推演**（核心要求：给出大概的价格参考）：
-                               - **【短期波段】**：基于现价，短期**布局进入点**与**离场点**（止盈/止损）建议在哪里？
-                               - **【中长期配置】**：中线**建仓点位**与长线**离场目标**（若无中长线价值请明确指出）。
-                            """
+                            prompt = f"基于股票 {name}({symbol_input}) 现价 {price}，涨幅 {pct}%，市值 {quote['market_cap']} 亿。请分析基本面资金意图，并给出短线/中线具体买卖点位推演。"
                             st.markdown(call_ai(prompt))
                     else:
                         df_kline = add_indicators(df_kline)
                         tech = summarize_technicals(df_kline)
                         smc = tech["smc"]
                         
-                        fig = build_price_figure(df_kline)
-                        st.plotly_chart(fig, width="stretch")
+                        st.plotly_chart(build_price_figure(df_kline), width="stretch")
                         
-                        st.markdown("##### 🔬 核心技术指标与阻力测算")
+                        st.markdown("##### 🔬 核心技术指标")
                         t1, t2, t3, t4 = st.columns(4)
                         t1.metric("趋势", tech["trend"])
                         t2.metric("RSI14", f"{tech['rsi14']:.2f}" if pd.notna(tech["rsi14"]) else "N/A")
                         t3.metric("ATR14", f"{tech['atr14']:.2f}" if pd.notna(tech["atr14"]) else "N/A")
                         t4.metric("MACD状态", tech["macd_state"])
                         
-                        t5, t6, t7, t8 = st.columns(4)
-                        t5.metric("布林状态", tech["bb_state"])
-                        t6.metric("量能状态", tech["vol_state"])
-                        t7.metric("BOS", tech["bos_state"])
-                        t8.metric("流动性扫盘", tech["sweep_state"])
-                        
-                        st.markdown("##### 🧩 FVG / ICT / SMC 结构信息")
+                        st.markdown("##### 🧩 SMC 结构信息")
                         f1, f2 = st.columns(2)
                         with f1:
-                            bull_fvg = tech["nearest_bull_fvg"]
-                            if bull_fvg:
-                                st.success(f"最近多头 FVG：{bull_fvg['date']} | 区间 {bull_fvg['bottom']:.2f} - {bull_fvg['top']:.2f}")
-                            else:
-                                st.info("最近未检测到明显多头 FVG")
-                            if smc["latest_bull_ob"]:
-                                st.success(f"最近多头 OB：{smc['latest_bull_ob']['date']} | 区间 {smc['latest_bull_ob']['bottom']:.2f} - {smc['latest_bull_ob']['top']:.2f}")
-                            else:
-                                st.info("最近未检测到明显多头 OB")
+                            if tech["nearest_bull_fvg"]: st.success(f"多头FVG：{tech['nearest_bull_fvg']['bottom']:.2f} - {tech['nearest_bull_fvg']['top']:.2f}")
+                            if smc["latest_bull_ob"]: st.success(f"多头OB：{smc['latest_bull_ob']['bottom']:.2f} - {smc['latest_bull_ob']['top']:.2f}")
                         with f2:
-                            bear_fvg = tech["nearest_bear_fvg"]
-                            if bear_fvg:
-                                st.error(f"最近空头 FVG：{bear_fvg['date']} | 区间 {bear_fvg['bottom']:.2f} - {bear_fvg['top']:.2f}")
-                            else:
-                                st.info("最近未检测到明显空头 FVG")
-                            if smc["latest_bear_ob"]:
-                                st.error(f"最近空头 OB：{smc['latest_bear_ob']['date']} | 区间 {smc['latest_bear_ob']['bottom']:.2f} - {smc['latest_bear_ob']['top']:.2f}")
-                            else:
-                                st.info("最近未检测到明显空头 OB")
+                            if tech["nearest_bear_fvg"]: st.error(f"空头FVG：{tech['nearest_bear_fvg']['bottom']:.2f} - {tech['nearest_bear_fvg']['top']:.2f}")
+                            if smc["latest_bear_ob"]: st.error(f"空头OB：{smc['latest_bear_ob']['bottom']:.2f} - {smc['latest_bear_ob']['top']:.2f}")
 
-                        st.markdown("##### 🏗️ 市场结构补充")
-                        s1, s2, s3 = st.columns(3)
-                        eqh_count = len(smc["eqh"]) if smc["eqh"] else 0
-                        eql_count = len(smc["eql"]) if smc["eql"] else 0
-                        pd_zone = smc["pd_zone"]["zone"] if smc["pd_zone"] else "N/A"
-                        s1.metric("MSS", smc["mss"])
-                        s2.metric("EQH / EQL", f"{eqh_count} / {eql_count}")
-                        s3.metric("P/D Zone", pd_zone)
-                        
-                        latest_close = tech["latest_close"]
-                        support_zone = min(tech["ema20"], tech["ema60"])
-                        pressure_zone = max(tech["ema20"], tech["ema60"])
-                        
-                        st.markdown("##### 🎯 动态支撑 / 压力")
-                        z1, z2, z3 = st.columns(3)
-                        z1.metric("最新收盘", f"{latest_close:.2f}")
-                        z2.metric("动态支撑参考", f"{support_zone:.2f}")
-                        z3.metric("动态压力参考", f"{pressure_zone:.2f}")
-                        
-                        with st.expander("📚 技术面模型说明"):
-                            st.write("""
-                            - EMA20/EMA60/EMA120：判断短中长期趋势
-                            - RSI14：判断超买超卖与动量强弱
-                            - MACD：判断动量拐点与趋势延续
-                            - ATR14：判断波动率，辅助止损空间评估
-                            - FVG (Fair Value Gap)：观察价格失衡区与回补机会
-                            - BOS (Break of Structure)：判断结构是否有效突破
-                            - Order Block：寻找潜在机构承接/抛压区域
-                            - MSS (Market Structure Shift)：趋势结构切换信号
-                            - EQH/EQL：识别流动性池
-                            - Premium/Discount Zone：判断当前位置贵/便宜
-                            - 流动性扫盘：识别假突破、诱多诱空
-                            """)
-                            
-                        with st.spinner("🧠 首席策略官进行多维深度解构(基本面+资金面+买卖点测算)..."):
-                            ema60_val = f"{tech['ema60']:.2f}" if pd.notna(tech['ema60']) else "数据不足"
-                            ema120_val = f"{tech['ema120']:.2f}" if pd.notna(tech['ema120']) else "数据不足"
-                            
+                        with st.spinner("🧠 首席策略官进行多维深度解构..."):
                             prompt = f"""
-你现在是顶级私募基金的操盘手（精通基本面与量价资金博弈）。
 请对股票 {name}({symbol_input}) 做一份极具实战价值的【估值 + 资金流 + 支撑/压力 + 精准买卖点】综合研判。
-
-【基础与资金博弈数据】
-- 现价: {price} (日涨跌幅: {pct}%)
-- 总市值: {quote['market_cap']} 亿 | 动态 PE: {quote['pe']} | 市净率 PB: {quote['pb']}
-- 当日换手率: {quote['turnover']}%
-- 近期量能状态: {tech['vol_state']}
-
-【核心技术与结构数据】
-- 趋势状态: {tech['trend']} | RSI14: {tech['rsi14']}
-- 最新收盘: {tech['latest_close']} 
-- 短期生命线 (EMA20): {tech['ema20']}
-- 中长期基准 (EMA60/120): {ema60_val} / {ema120_val}
-- 结构特征: BOS({tech['bos_state']}), MSS({smc['mss']})
-- 异常流动性: 扫盘({tech['sweep_state']})
-- 核心磁区 (FVG/OB): 
-  近期多头 FVG: {tech['nearest_bull_fvg']} 
-  近期空头 FVG: {tech['nearest_bear_fvg']}
-
-【请务必按以下维度输出，不要说正确的废话】：
-1. 🏦 **基本面与估值定位**：结合市值与 PE/PB，判断当前估值是杀跌透支还是泡沫溢价。
-2. 🌊 **资金面穿透**：结合今日换手率（{quote['turnover']}%）、量能状态及近期结构，推演主力机构是在悄悄吸筹、接力洗盘，还是派发跑路？
-3. 🎯 **支撑与压力测算**：结合均线和空头/多头 FVG，给出具体的**短线强支撑位**和**上行重压位**。
-4. ⚔️ **布局进入与离场推演**（核心要求：必须明确给出实战指导建议和大致的价格区间）：
-   - **【短期波段操作】**：
-     - **进入点（建仓）**：现阶段的最佳激进建仓位或等待回调的回踩买点在哪里？
-     - **离场点（止盈/止损）**：短期向上阻力在哪里（该止盈了）？跌破什么价格必须无条件止损？
-   - **【中长期配置逻辑】**：
-     - **进入点（建仓）**：该标的是否具备长线逻辑？若是，中长线应该在什么价格区间逢低分批买入？
-     - **离场点（止盈）**：长线的远期目标价位看高到多少？（如果不具备长线投资价值，请坚决劝退不要做长线）。
+现价: {price} | 市值: {quote['market_cap']}亿 | PE: {quote['pe']} | 换手率: {quote['turnover']}%
+趋势: {tech['trend']} | RSI14: {tech['rsi14']} | 最新收盘: {tech['latest_close']}
+请务必按以下维度输出：
+1. 基本面与估值定位
+2. 资金面穿透与意图推演
+3. 支撑与压力位精准测算
+4. 明确的短期/中长线建仓进入点与止盈离场点价格区间
 结论定调：[看多 / 观察 / 谨慎 / 偏空]
 """
                             st.markdown(call_ai(prompt))
 
-# ================= Tab 2: 宏观大盘推演 =================
+# ================= Tab 2: 宏观大盘 =================
 with tab2:
     with st.container(border=True):
         st.markdown("#### 📊 全盘系统级推演")
-        st.write("结合全局宏观看板与近期市场结构，进行大局观研判。")
         if st.button("运行大盘沙盘推演", type="primary"):
-            if not api_key:
-                st.error("配置缺失: GROQ_API_KEY")
+            if not api_key: st.error("缺失 API KEY")
             else:
                 with st.spinner("推演引擎初始化..."):
-                    prompt = f"""
-你现在是高盛首席宏观策略师。请基于当前 A 股与外汇的精准数据进行大局观推演：
-实时数据：{str(pulse_data)}
-请输出：
-1. 市场全景定调（分化还是普涨）
-2. 北向资金意愿推断（基于汇率）
-3. 短期沙盘推演方向
-"""
-                    st.markdown(call_ai(prompt, temperature=0.4))
+                    st.markdown(call_ai(f"基于当前实时数据 {str(pulse_data)} 进行宏观大局观推演。1. 市场全景定调 2. 北向资金意愿推断 3. 短期沙盘推演方向", temperature=0.4))
 
-# ================= Tab 3: 热点资金板块 =================
+# ================= Tab 3: 热点板块 =================
 with tab3:
     with st.container(border=True):
         st.markdown("#### 🔥 当日主力资金狂欢地 (附实战标的推荐)")
-        st.write("追踪全天涨幅最猛的行业板块，揪出领涨龙头，识别主线题材，并生成配置标的清单。")
         if st.button("扫描板块与生成配置推荐", type="primary"):
+            if not api_key: st.error("缺失 API KEY")
+            else:
+                with st.spinner("深潜获取异动数据..."):
+                    blocks = get_hot_blocks()
+                    if blocks:
+                        st.dataframe(pd.DataFrame(blocks), width="stretch", hide_index=True)
+                        blocks_str = "\n".join([f"{b['板块名称']} (领涨:{b['领涨股票']})" for b in blocks[:5]])
+                        with st.spinner("🧠 游资操盘手拆解逻辑..."):
+                            st.markdown(call_ai(f"解读今日最强板块：{blocks_str}。输出核心驱动逻辑、行情定性，并推荐 2-3 只实战配置标的及入场姿势。", temperature=0.4))
+                    else:
+                        st.error("获取板块数据失败。")
+
+# ================= Tab 4: 高阶情报终端 (深度优化版) =================
+with tab4:
+    st.markdown("#### 📡 机构级事件图谱与智能评级矩阵")
+    st.write("追踪彭博、推特、美联储、特朗普等宏观变量。已引入「会话记忆缓存」与「极客卡片渲染」，完美适配移动端。")
+    
+    col_btn, col_clear = st.columns([3, 1])
+    with col_btn:
+        if st.button("🚨 截获并解析全球突发", type="primary", use_container_width=True):
             if not api_key:
                 st.error("配置缺失: GROQ_API_KEY")
             else:
-                with st.spinner("深潜获取东方财富板块异动数据... (若遇熔断将自动切换备用数据源)"):
-                    blocks = get_hot_blocks()
-                    if blocks:
-                        df_blocks = pd.DataFrame(blocks)
-                        st.dataframe(df_blocks, width="stretch", hide_index=True)
-                        with st.spinner("🧠 首席游资操盘手拆解逻辑并筛选跟进标的..."):
-                            blocks_str = "\n".join([f"{b['板块名称']} (涨幅:{b['涨跌幅']}%, 领涨龙头:{b['领涨股票']})" for b in blocks[:5]])
-                            prompt = f"""
-作为顶级游资操盘手，请深度解读今日最强的 5 个板块及其领涨龙头：
-{blocks_str}
-
-请输出：
-1. 【核心驱动】这些板块背后的底层逻辑或共振政策利好是什么？
-2. 【行情定性】这是存量博弈的一日游情绪宣泄，还是具备中线发酵潜力的主线？
-3. 🎯 **【个股配置与实战推荐】**：
-   基于上述板块逻辑和**领涨股票**，为散户推荐 **2-3 只可以进行重点配置或埋伏的股票**（建议从行业核心军团、或具备身位优势的龙二龙三、或是低位蓄势补涨标的中挑选）。
-   对于推荐的每一只股票，请务必写明：
-   - 股票名称与行业归属
-   - 核心配置理由（为什么选它？）
-   - 建议的入场姿势（例如：打板接力、缩量回调低吸、还是右侧突破追随？）
-"""
-                            st.markdown(call_ai(prompt, temperature=0.4))
+                with st.spinner("监听全网节点并执行深度 NLP 解析..."):
+                    global_news = get_global_news()
+                    if not global_news:
+                        st.warning("当前信号静默或被防火墙拦截。")
                     else:
-                        st.error("获取板块数据失败，所有接口均处于熔断保护期。建议稍等几分钟后再试。")
+                        news_text = "\n".join(global_news)
+                        # 将原生数据存入缓存
+                        st.session_state.raw_news_cache = news_text
+                        
+                        with st.spinner("🧠 情报官正在生成自适应移动端的情报卡片..."):
+                            prompt = f"""
+你现在是顶级对冲基金的首席宏观情报官。我截获了全球金融市场的底层快讯流。
+请你挑选出最具爆炸性和市场影响力的 5-8 条动态。重点寻猎：宏观政策、重要人物发言、地缘突发。
 
-# ================= Tab 4: 高阶情报终端 =================
-with tab4:
-    st.markdown("#### 📡 机构级事件图谱与智能评级矩阵")
-    st.write("追踪彭博、推特、美联储、特朗普等宏观变量。已深度适配移动端，引入极客量化风控模块。")
-    
-    if st.button("🚨 截获并解析全球突发", type="primary"):
-        if not api_key:
-            st.error("配置缺失: GROQ_API_KEY")
-        else:
-            with st.spinner("监听全网节点并执行深度 NLP 解析..."):
-                global_news = get_global_news()
-                if not global_news:
-                    st.warning("当前信号静默或被防火墙拦截。")
-                else:
-                    news_text = "\n".join(global_news)
-                    with st.expander("🕵️‍♂️ 查看底层监听流 (Raw Data)"):
-                        st.text(news_text)
-                    
-                    with st.spinner("🧠 情报官正在生成自适应移动端的情报卡片..."):
-                        prompt = f"""
-你现在是华尔街顶级对冲基金的【首席宏观情报官】与【高阶量化风控专家】。
-我截获了全球金融市场的底层快讯流。请你挑选出最具爆炸性和市场影响力的 5-8 条动态。
-重点寻猎靶标：彭博社 (Bloomberg)、推特 (X)、特朗普 (Trump)、马斯克 (Musk)、美联储，以及任何可能引发流动性危机或资金抱团退潮的事件。
+⚠️【格式严令】⚠️
+绝对禁止使用 Markdown 表格！绝对禁止输出重复的内容！
+请直接以如下紧凑的 Markdown 格式输出每一条情报（每一条之间空一行）：
 
-⚠️【排版严令：禁止使用 Markdown 表格】⚠️
-为了适配移动端设备的终端显示，你绝对不能使用表格！必须为每一个事件生成一个独立的情报卡片。
-请【严格根据快讯内容重写】下面方括号里的内容，绝对不要原样保留“事件核心提炼标题”这种占位符文本！
+### [评级Emoji] [[信源/人物]] [高度概括标题]
+- **时间**: [截获时间]
+- **简述**: [1-2句话说清发生了什么]
+- **波及**: [利好/利空什么资产]
+- **推演**: [资金动向及风控硬核预警]
 
-输出格式必须如下：
-### [评级Emoji] [[信源/人物]] [用5-15个字高度概括真实发生的事件标题]
-* ⏰ **时间截获**: [提取对应时间]
-* 📝 **情报简述**: [用1-2句话清晰说明到底发生了什么事、谁说了什么话、有什么具体动作]
-* 🎯 **受波及资产**: [具象化指出利好/利空的资产，如：美债、加密市场(BTC/SOL)、A股某具体板块、原油等]
-* 🧠 **沙盘推演**: [一句话精炼指出对金融市场的实质影响，以及资金潜在的做多/做空避险方向]
-* ☢️ **风控预警**: [结合市场情绪，给出一个简短的硬核预警，例如：散户诱多风险、巨鲸砸盘预警、流动性抽干高危等]
----
-
-在 [评级Emoji] 处，严格遵守以下标准：
-🔴 核心：直接引发巨震的突发、大选级人物强硬表态、黑天鹅事件。
-🟡 重要：关键经济数据、行业重磅政策、流动性显著异动。
-🔵 一般：常规宏观事件。
+[评级Emoji] 标准：🔴 核心巨震，🟡 重要宏观，🔵 常规消息。
 
 底层情报数据流：
 {news_text}
 """
-                        report = call_ai(prompt, temperature=0.2)
-                        st.markdown("---")
-                        st.markdown(report)
+                            # 获取 AI 结果并存入 Session State，防止页面刷新丢失
+                            report = call_ai(prompt, temperature=0.2)
+                            st.session_state.global_report = report
+
+    with col_clear:
+        # 提供手动清除缓存的入口
+        if st.session_state.global_report and st.button("🗑️ 清空缓存", use_container_width=True):
+            st.session_state.global_report = None
+            st.session_state.raw_news_cache = ""
+            st.rerun()
+
+    # 渲染模块：只有当缓存中有报告时才渲染，确保只渲染一次
+    if st.session_state.global_report:
+        st.markdown("---")
+        with st.expander("🕵️‍♂️ 查看底层监听流 (Raw Data)", expanded=False):
+            st.text(st.session_state.raw_news_cache)
+        
+        # 使用自定义 CSS 的 Div 包裹输出内容，让移动端看起来更像卡片
+        st.markdown("<div class='news-card'>", unsafe_allow_html=True)
+        st.markdown(st.session_state.global_report)
+        st.markdown("</div>", unsafe_allow_html=True)
