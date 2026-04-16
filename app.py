@@ -7,7 +7,7 @@ from urllib3.util.retry import Retry
 import re
 import akshare as ak
 import tushare as ts
-import baostock as bs  # <--- 新增 Baostock 接口
+import baostock as bs
 import random
 import time
 from datetime import datetime
@@ -51,7 +51,7 @@ st.markdown("""
 
 st.title("🏦 AI 智能量化投研终端")
 st.markdown(
-    f"<div class='terminal-header'>TERMINAL BUILD v6.2.0 | SYS_TIME: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | BAOSTOCK INTEGRATED</div>",
+    f"<div class='terminal-header'>TERMINAL BUILD v6.2.1 | SYS_TIME: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | BAOSTOCK + INDEX HOTFIX</div>",
     unsafe_allow_html=True
 )
 
@@ -68,7 +68,7 @@ with st.sidebar:
     st.success("行情引流 : ACTIVE")
     st.success("7x24快讯 : ACTIVE")
     st.success("板块扫描 : ACTIVE (带熔断保护)")
-    st.success("技术结构引擎 : ACTIVE (Baostock就绪)")
+    st.success("技术结构引擎 : ACTIVE (核心算法已双重加固)")
 
 if ts_token:
     ts.set_token(ts_token)
@@ -166,11 +166,13 @@ def detect_swings(df: pd.DataFrame, left=2, right=2):
     if len(df) < left + right + 1:
         return swing_highs, swing_lows
     for i in range(left, len(df) - right):
-        high = df.loc[i, "high"]
-        low = df.loc[i, "low"]
-        if high == df.loc[i-left:i+right, "high"].max():
+        # 修复点：强制使用绝对索引 .iloc，无视标签索引错误
+        high = df["high"].iloc[i]
+        low = df["low"].iloc[i]
+        # .iloc 切片的右边界是独占的，所以需要 i+right+1
+        if high == df["high"].iloc[i-left : i+right+1].max():
             swing_highs.append((i, high))
-        if low == df.loc[i-left:i+right, "low"].min():
+        if low == df["low"].iloc[i-left : i+right+1].min():
             swing_lows.append((i, low))
     return swing_highs, swing_lows
 
@@ -483,24 +485,22 @@ def get_market_pulse():
 
 @st.cache_data(ttl=300)
 def get_hot_blocks():
-    # 策略 1: 尝试获取行业板块数据
     try:
         df = ak.stock_board_industry_name_em()
         if df is not None and not df.empty:
             top_blocks = df.sort_values(by="涨跌幅", ascending=False).head(10)
             return top_blocks[["板块名称", "涨跌幅", "上涨家数", "下跌家数", "领涨股票"]].to_dict('records')
-    except Exception as e:
+    except Exception:
         pass
 
-    time.sleep(1) # 缓冲一下，防止连续触发熔断
+    time.sleep(1) 
     
-    # 策略 2: 行业板块熔断时，降级使用概念板块数据
     try:
         df = ak.stock_board_concept_name_em()
         if df is not None and not df.empty:
             top_blocks = df.sort_values(by="涨跌幅", ascending=False).head(10)
             return top_blocks[["板块名称", "涨跌幅", "上涨家数", "下跌家数", "领涨股票"]].to_dict('records')
-    except Exception as e:
+    except Exception:
         pass
         
     return None
@@ -525,16 +525,15 @@ def get_stock_quote(symbol):
     return None
 
 def get_kline(symbol, days=220):
-    # 动态计算日期窗口，极大减轻网络和内存负担
     end_date = datetime.now()
-    start_date = end_date - pd.Timedelta(days=days + 150) # 预留周末和节假日冗余
+    start_date = end_date - pd.Timedelta(days=days + 150) 
     
     start_str = start_date.strftime("%Y%m%d")
     end_str = end_date.strftime("%Y%m%d")
     start_str_bs = start_date.strftime("%Y-%m-%d")
     end_str_bs = end_date.strftime("%Y-%m-%d")
 
-    # 1) AKShare 前复权 (首发主力)
+    # 1) AKShare 前复权
     try:
         df = ak.stock_zh_a_hist(symbol=str(symbol), period="daily", start_date=start_str, end_date=end_str, adjust="qfq")
         if df is not None and not df.empty:
@@ -551,12 +550,13 @@ def get_kline(symbol, days=220):
                     df[col] = pd.to_numeric(df[col], errors="coerce")
                 df = df.dropna().reset_index(drop=True)
                 if len(df) > 0:
-                    return df.tail(days)
+                    # 修复点：强制重置索引，消除潜在的 Key Error
+                    return df.tail(days).reset_index(drop=True)
     except Exception as e:
         if DEBUG_MODE:
             st.warning(f"AKShare qfq 降级失败: {e}")
 
-    # 2) AKShare 不复权 (第一降级)
+    # 2) AKShare 不复权
     try:
         df = ak.stock_zh_a_hist(symbol=str(symbol), period="daily", start_date=start_str, end_date=end_str, adjust="")
         if df is not None and not df.empty:
@@ -572,25 +572,26 @@ def get_kline(symbol, days=220):
                     df[col] = pd.to_numeric(df[col], errors="coerce")
                 df = df.dropna().reset_index(drop=True)
                 if len(df) > 0:
-                    return df.tail(days)
+                    # 修复点：强制重置索引
+                    return df.tail(days).reset_index(drop=True)
     except Exception as e:
         if DEBUG_MODE:
             st.warning(f"AKShare raw 降级失败: {e}")
 
-    # 3) Baostock 接口 (第二降级 / 强力补充)
+    # 3) Baostock 接口
     try:
-        bs.login() # 登录 baostock
+        bs.login() 
         bs_code = f"sh.{symbol}" if str(symbol).startswith(("6", "9", "5", "7")) else f"sz.{symbol}"
         rs = bs.query_history_k_data_plus(
             bs_code,
             "date,open,high,low,close,volume",
             start_date=start_str_bs, end_date=end_str_bs,
-            frequency="d", adjustflag="2" # 2: 前复权
+            frequency="d", adjustflag="2" 
         )
         data_list = []
         while (rs.error_code == '0') & rs.next():
             data_list.append(rs.get_row_data())
-        bs.logout() # 退出登录
+        bs.logout() 
         
         if data_list:
             df = pd.DataFrame(data_list, columns=rs.fields)
@@ -600,7 +601,8 @@ def get_kline(symbol, days=220):
                 df[col] = pd.to_numeric(df[col], errors="coerce")
             df = df.dropna().sort_values("date").reset_index(drop=True)
             if len(df) > 0:
-                return df.tail(days)
+                # 修复点：强制重置索引
+                return df.tail(days).reset_index(drop=True)
     except Exception as e:
         if DEBUG_MODE:
             st.warning(f"Baostock 降级失败: {e}")
@@ -609,7 +611,7 @@ def get_kline(symbol, days=220):
         except:
             pass
 
-    # 4) Tushare (终极兜底)
+    # 4) Tushare
     try:
         if ts_token:
             pro = ts.pro_api()
@@ -630,7 +632,8 @@ def get_kline(symbol, days=220):
                         df[col] = pd.to_numeric(df[col], errors="coerce")
                     df = df.dropna().sort_values("date").reset_index(drop=True)
                     if len(df) > 0:
-                        return df.tail(days)
+                        # 修复点：强制重置索引
+                        return df.tail(days).reset_index(drop=True)
     except Exception as e:
         if DEBUG_MODE:
             st.warning(f"Tushare 兜底失败: {e}")
@@ -797,7 +800,6 @@ with tab1:
                             """)
                             
                         with st.spinner("🧠 首席策略官进行多维深度解构(基本面+资金面+买卖点测算)..."):
-                            # 动态处理可能因为天数不够导致的 NaN 值
                             ema60_val = f"{tech['ema60']:.2f}" if pd.notna(tech['ema60']) else "数据不足"
                             ema120_val = f"{tech['ema120']:.2f}" if pd.notna(tech['ema120']) else "数据不足"
                             
@@ -891,7 +893,7 @@ with tab3:
                     else:
                         st.error("获取板块数据失败，所有接口均处于熔断保护期。建议稍等几分钟后再试。")
 
-# ================= Tab 4: 高阶情报终端 (优化版) =================
+# ================= Tab 4: 高阶情报终端 =================
 with tab4:
     st.markdown("#### 📡 机构级事件图谱与智能评级矩阵")
     st.write("追踪彭博、推特、美联储、特朗普等宏观变量。已深度适配移动端，引入极客量化风控模块。")
