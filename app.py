@@ -60,7 +60,7 @@ api_key = st.secrets.get("GROQ_API_KEY", "")
 # ================= 侧边栏与参数调优 =================
 with st.sidebar:
     st.header("⚙️ 终端控制台")
-
+    
     # 新增：手动选择 LLM 模型
     st.markdown("### 🧠 核心推理引擎")
     selected_model = st.selectbox(
@@ -69,7 +69,7 @@ with st.sidebar:
         index=0,
         help="手动指定底层计算模型，精准控制分析逻辑"
     )
-
+    
     # 新增：手动干预技术参数
     st.markdown("### 🎛️ 策略参数微调")
     with st.expander("自定义均线周期 (手动输入)", expanded=False):
@@ -79,7 +79,7 @@ with st.sidebar:
 
     ts_token = st.text_input("🔑 Tushare Token", type="password", help="仅作极致容灾兜底")
     DEBUG_MODE = st.checkbox("🛠️ 开启底层日志嗅探")
-
+    
     st.markdown("---")
     st.markdown("### 📡 数据连通性")
     st.success("行情引流 : ACTIVE")
@@ -163,14 +163,14 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["ema_short"] = df["close"].ewm(span=ema_short, adjust=False).mean()
     df["ema_mid"] = df["close"].ewm(span=ema_mid, adjust=False).mean()
     df["ema_long"] = df["close"].ewm(span=ema_long, adjust=False).mean()
-
+    
     # MACD
     ema12 = df["close"].ewm(span=12, adjust=False).mean()
     ema26 = df["close"].ewm(span=26, adjust=False).mean()
     df["macd"] = ema12 - ema26
     df["macd_signal"] = df["macd"].ewm(span=9, adjust=False).mean()
     df["macd_hist"] = df["macd"] - df["macd_signal"]
-
+    
     # RSI14
     delta = df["close"].diff()
     gain = delta.clip(lower=0)
@@ -179,7 +179,7 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     avg_loss = loss.rolling(14).mean()
     rs = avg_gain / avg_loss.replace(0, pd.NA)
     df["rsi14"] = 100 - (100 / (1 + rs))
-
+    
     # ATR14
     prev_close = df["close"].shift(1)
     tr1 = df["high"] - df["low"]
@@ -187,14 +187,14 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     tr3 = (df["low"] - prev_close).abs()
     df["tr"] = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
     df["atr14"] = df["tr"].rolling(14).mean()
-
+    
     # Bollinger
     ma20 = df["close"].rolling(20).mean()
     std20 = df["close"].rolling(20).std()
     df["bb_mid"] = ma20
     df["bb_up"] = ma20 + 2 * std20
     df["bb_low"] = ma20 - 2 * std20
-
+    
     # Volume MA
     df["vol_ma20"] = df["volume"].rolling(20).mean()
     return df
@@ -404,7 +404,7 @@ def summarize_technicals(df: pd.DataFrame):
     return {
         "trend": trend,
         "momentum": momentum,
-        "macd_state": maccd_state,
+        "macd_state": macd_state,
         "bb_state": bb_state,
         "vol_state": vol_state,
         "atr14": latest["atr14"],
@@ -424,7 +424,7 @@ def summarize_technicals(df: pd.DataFrame):
 def build_price_figure(df: pd.DataFrame):
     plot_df = df.copy()
     plot_df["date_str"] = plot_df["date"].dt.strftime("%Y-%m-%d")
-
+    
     # 创建带副图的画布
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, 
                         vertical_spacing=0.03, subplot_titles=('K 线与结构', '成交量'),
@@ -439,7 +439,7 @@ def build_price_figure(df: pd.DataFrame):
         close=plot_df["close"],
         name="K线"
     ), row=1, col=1)
-
+    
     # 均线
     fig.add_trace(go.Scatter(x=plot_df["date_str"], y=plot_df["ema_short"], mode="lines", name=f"EMA{ema_short}", line=dict(width=1)), row=1, col=1)
     fig.add_trace(go.Scatter(x=plot_df["date_str"], y=plot_df["ema_mid"], mode="lines", name=f"EMA{ema_mid}", line=dict(width=1)), row=1, col=1)
@@ -830,23 +830,6 @@ def get_kline(symbol, days=220):
             st.warning(f"Tushare 兜底失败: {e}")
     return None
 
-# ================= 新增：龙虎榜底层核心函数 =================
-@st.cache_data(ttl=300)
-def get_lhb_data():
-    """向后容灾抓取近5天的龙虎榜详情，确保数据连贯性"""
-    try:
-        end_str = datetime.now().strftime("%Y%m%d")
-        start_str = (datetime.now() - pd.Timedelta(days=5)).strftime("%Y%m%d")
-        df = ak.stock_lhb_detail_em(start_date=start_str, end_date=end_str)
-        if df is not None and not df.empty:
-            latest_date = df['交易日期'].max()
-            latest_df = df[df['交易日期'] == latest_date].copy()
-            return latest_date, latest_df
-    except Exception as e:
-        if DEBUG_MODE:
-            st.warning(f"龙虎榜数据获取失败: {e}")
-    return None, None
-
 # ================= AI 计算核心 =================
 def call_ai(prompt, model=None, temperature=0.3):
     try:
@@ -878,13 +861,12 @@ else:
     st.warning("宏观看板数据流建立失败。")
 st.markdown("<br>", unsafe_allow_html=True)
 
-# ================= 终端功能选项卡 (已集成龙虎榜) =================
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
+# ================= 终端功能选项卡 =================
+tab1, tab2, tab3, tab4 = st.tabs([
     "🎯 I. 个股标的解析",
     "📈 II. 宏观大盘推演",
     "🔥 III. 资金热点板块",
-    "🦅 IV. 高阶情报终端",
-    "🐉 V. 智瞰龙虎榜"
+    "🦅 IV. 高阶情报终端"
 ])
 
 # ================= Tab 1: 个股解析 =================
@@ -936,7 +918,7 @@ with tab1:
                         smc = tech["smc"]
                         fig = build_price_figure(df_kline)
                         st.plotly_chart(fig, use_container_width=True)
-
+                        
                         st.markdown("##### 🔬 核心技术指标与阻力测算")
                         t1, t2, t3, t4 = st.columns(4)
                         t1.metric("趋势", tech["trend"])
@@ -948,7 +930,7 @@ with tab1:
                         t6.metric("量能状态", tech["vol_state"])
                         t7.metric("BOS", tech["bos_state"])
                         t8.metric("流动性扫盘", tech["sweep_state"])
-
+                        
                         st.markdown("##### 🧩 FVG / ICT / SMC 结构信息")
                         f1, f2 = st.columns(2)
                         with f1:
@@ -971,7 +953,7 @@ with tab1:
                                 st.error(f"最近空头 OB：{smc['latest_bear_ob']['date']} | 区间 {smc['latest_bear_ob']['bottom']:.2f} - {smc['latest_bear_ob']['top']:.2f}")
                             else:
                                 st.info("最近未检测到明显空头 OB")
-
+                                
                         st.markdown("##### 🏗️ 市场结构补充")
                         s1, s2, s3 = st.columns(3)
                         eqh_count = len(smc["eqh"]) if smc["eqh"] else 0
@@ -981,7 +963,7 @@ with tab1:
                         s2.metric("EQH / EQL", f"{eqh_count} / {eql_count}")
                         s3.metric("P/D Zone", pd_zone)
                         latest_close = tech["latest_close"]
-
+                        
                         support_zone = min(tech["ema_short"], tech["ema_mid"])
                         pressure_zone = max(tech["ema_short"], tech["ema_mid"])
                         st.markdown("##### 🎯 动态支撑 / 压力")
@@ -989,7 +971,7 @@ with tab1:
                         z1.metric("最新收盘", f"{latest_close:.2f}")
                         z2.metric("动态支撑参考", f"{support_zone:.2f}")
                         z3.metric("动态压力参考", f"{pressure_zone:.2f}")
-
+                        
                     st.markdown("##### ⏱️ 多周期技术分析")
                     m1, m2, m3 = st.columns(3)
                     with m1:
@@ -1028,10 +1010,10 @@ with tab1:
                             st.caption(f"支撑: {tf['support']:.2f}")
                         if tf["pressure"] is not None:
                             st.caption(f"压力: {tf['pressure']:.2f}")
-
+                            
                     st.markdown("##### 🧠 多周期综合结论")
                     st.info(f"综合结论：**{mtf['final_view']}**")
-
+                    
                     with st.spinner(f"🧠 首席策略官正在使用 {selected_model} 进行多维深度解构..."):
                         if df_kline is not None and len(df_kline) >= 15:
                             tech = summarize_technicals(add_indicators(df_kline))
@@ -1196,69 +1178,3 @@ with tab4:
                         report = call_ai(prompt, temperature=0.2)
                         st.markdown("---")
                         st.markdown(report)
-
-# ================= Tab 5: 智瞰龙虎榜 (新增模块) =================
-with tab5:
-    with st.container(border=True):
-        st.markdown("#### 🐉 智瞰龙虎榜 (游资与机构动向拆解)")
-        st.write("追踪最新龙虎榜席位买卖数据，挖掘顶级游资和机构的真实建仓意图，梳理接力与避坑方向。")
-        
-        if st.button("拉取最新龙虎榜并进行 AI 深度解构", type="primary"):
-            if not api_key:
-                st.error("配置缺失: GROQ_API_KEY")
-            else:
-                with st.spinner("正在穿透东方财富底层接口抓取席位数据..."):
-                    latest_date, lhb_df = get_lhb_data()
-                    
-                    if lhb_df is None or lhb_df.empty:
-                        st.error("未能获取到近期龙虎榜数据，可能处于非交易日或底层接口限流。")
-                    else:
-                        st.success(f"✅ 成功捕获 {latest_date} 龙虎榜数据！共 {len(lhb_df)} 只上榜核心标的。")
-                        
-                        # 数据预处理与精简展示
-                        show_cols = ["代码", "名称", "解读", "收盘价", "涨跌幅", "龙虎榜净买额", "买方席位", "卖方席位"]
-                        available_cols = [c for c in show_cols if c in lhb_df.columns]
-                        st.dataframe(lhb_df[available_cols].head(20), use_container_width=True)
-                        
-                        with st.spinner("🧠 顶尖游资导师正在逐笔核对席位，追踪主线题材与资金合力..."):
-                            # 提取净买入靠前的个股喂给模型
-                            if "龙虎榜净买额" in lhb_df.columns:
-                                lhb_df["龙虎榜净买额"] = pd.to_numeric(lhb_df["龙虎榜净买额"], errors="coerce").fillna(0)
-                                top_buy = lhb_df.sort_values(by="龙虎榜净买额", ascending=False).head(15)
-                            else:
-                                top_buy = lhb_df.head(15)
-                                
-                            lhb_str = "\n".join([
-                                f"股票: {row.get('名称', '')} ({row.get('代码', '')}) | "
-                                f"涨幅: {row.get('涨跌幅', '')}% | "
-                                f"净买额: {row.get('龙虎榜净买额', '未知')} | "
-                                f"上榜理由/解读: {row.get('解读', '无')}"
-                                for _, row in top_buy.iterrows()
-                            ])
-                            
-                            prompt = f"""
-你现在是 A 股游资圈的顶级导师（精通席位密码、合力接力、机构做盘逻辑与情绪周期）。
-以下是 {latest_date} 日的核心龙虎榜数据（净买额前15名）：
-
-{lhb_str}
-
-请为我提供一份极具实战价值的【智瞰龙虎榜深度复盘研报】，要求格式如下：
-
-1. 🏆 【游资与机构动向定调】
-   - 评估当天活跃资金的攻击偏好（主攻连板妖股，还是偏向机构容量大票？）
-   - 情绪处于什么周期（冰点试错 / 主升浪 / 退潮期）？
-   
-2. 🔥 【核心主线推理】
-   - 根据上榜股票的行业/概念属性，揪出资金正在抱团的 1-2 条暗线或主线。
-   
-3. 🎯 【重磅标的拆解】
-   - 从榜单中挑选出最具博弈价值的 2-3 只个股，拆解它们的买入逻辑与后续接力预期（不要长篇大论，要像操盘手内部复盘般精炼）。
-   
-4. ☢️ 【避坑与风控】
-   - 基于榜单情况，提醒当前打板或接力的主要风险。
-
-语言风格：犀利、干脆、实战导向，排版清晰易读。
-"""
-                            report = call_ai(prompt, temperature=0.4)
-                            st.markdown("---")
-                            st.markdown(report)
