@@ -52,7 +52,7 @@ st.markdown("""
 
 st.title("🏦 AI 智能量化投研终端")
 st.markdown(
-    f"<div class='terminal-header'>TERMINAL BUILD v6.3.1 | SYS_TIME: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | MULTI-TF BUGFIX</div>",
+    f"<div class='terminal-header'>TERMINAL BUILD v6.3.0 | SYS_TIME: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | MULTI-TF HOTFIX</div>",
     unsafe_allow_html=True
 )
 
@@ -135,8 +135,8 @@ def normalize_em_price(raw_price, prev_close=None):
         return 0.0
 
     candidates = [raw_price, raw_price / 10, raw_price / 100, raw_price / 1000]
-    candidates = [x for x in candidates if 0.01 <= x <= 100000]
 
+    candidates = [x for x in candidates if 0.01 <= x <= 100000]
     if not candidates:
         return raw_price
 
@@ -144,6 +144,7 @@ def normalize_em_price(raw_price, prev_close=None):
         best = min(candidates, key=lambda x: abs(x - prev_close))
         return best
 
+    # 无昨收时的经验判断
     if raw_price > 100000:
         return raw_price / 1000
     if raw_price > 10000:
@@ -157,16 +158,19 @@ def normalize_em_price(raw_price, prev_close=None):
 def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
 
+    # EMA
     df["ema20"] = df["close"].ewm(span=20, adjust=False).mean()
     df["ema60"] = df["close"].ewm(span=60, adjust=False).mean()
     df["ema120"] = df["close"].ewm(span=120, adjust=False).mean()
 
+    # MACD
     ema12 = df["close"].ewm(span=12, adjust=False).mean()
     ema26 = df["close"].ewm(span=26, adjust=False).mean()
     df["macd"] = ema12 - ema26
     df["macd_signal"] = df["macd"].ewm(span=9, adjust=False).mean()
     df["macd_hist"] = df["macd"] - df["macd_signal"]
 
+    # RSI14
     delta = df["close"].diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
@@ -175,6 +179,7 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     rs = avg_gain / avg_loss.replace(0, pd.NA)
     df["rsi14"] = 100 - (100 / (1 + rs))
 
+    # ATR14
     prev_close = df["close"].shift(1)
     tr1 = df["high"] - df["low"]
     tr2 = (df["high"] - prev_close).abs()
@@ -182,12 +187,14 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["tr"] = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
     df["atr14"] = df["tr"].rolling(14).mean()
 
+    # Bollinger
     ma20 = df["close"].rolling(20).mean()
     std20 = df["close"].rolling(20).std()
     df["bb_mid"] = ma20
     df["bb_up"] = ma20 + 2 * std20
     df["bb_low"] = ma20 - 2 * std20
 
+    # Volume MA
     df["vol_ma20"] = df["volume"].rolling(20).mean()
     return df
 
@@ -505,12 +512,11 @@ def build_price_figure(df: pd.DataFrame):
     return fig
 
 
-# ================= 多周期分析修复版 =================
+# ================= 多周期数据与分析 =================
 def normalize_min_df(df: pd.DataFrame):
     if df is None or df.empty:
         return None
 
-    df = df.copy()
     rename_map = {}
     for col in df.columns:
         if col in ["时间", "日期", "datetime", "date"]:
@@ -526,73 +532,30 @@ def normalize_min_df(df: pd.DataFrame):
         elif col in ["成交量", "volume"]:
             rename_map[col] = "volume"
 
-    df = df.rename(columns=rename_map)
+    df = df.rename(columns=rename_map).copy()
 
     need_cols = ["date", "open", "high", "low", "close", "volume"]
     if not all(col in df.columns for col in need_cols):
         return None
 
-    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df["date"] = pd.to_datetime(df["date"])
     for col in ["open", "high", "low", "close", "volume"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    df = df.dropna(subset=need_cols).sort_values("date").reset_index(drop=True)
+    df = df.dropna().sort_values("date").reset_index(drop=True)
     return df[need_cols]
 
 
-def fetch_em_minute_df(symbol: str, klt: int = 15, lmt: int = 800):
-    market = "1" if str(symbol).startswith(("6", "9", "5", "7")) else "0"
-    url = (
-        f"https://push2his.eastmoney.com/api/qt/stock/kline/get?"
-        f"secid={market}.{symbol}&ut=fa5fd1943c7b386f172d6893dbfba10b"
-        f"&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58"
-        f"&klt={klt}&fqt=1&end=20500101&lmt={lmt}"
-    )
-    res = fetch_json(url, timeout=8)
-    if not res or not res.get("data") or not res["data"].get("klines"):
-        return None
-
-    rows = []
-    for item in res["data"]["klines"]:
-        parts = item.split(",")
-        if len(parts) >= 6:
-            rows.append({
-                "date": parts[0],
-                "open": parts[1],
-                "close": parts[2],
-                "high": parts[3],
-                "low": parts[4],
-                "volume": parts[5]
-            })
-
-    if not rows:
-        return None
-
-    df = pd.DataFrame(rows)
-    return normalize_min_df(df)
-
-
-@st.cache_data(ttl=120)
 def get_intraday_15m(symbol, max_rows=320):
-    # 1) AKShare 优先
+    # 优先 AKShare 分钟数据
     try:
         df = ak.stock_zh_a_hist_min_em(symbol=str(symbol), period="15", adjust="")
         df = normalize_min_df(df)
-        if df is not None and not df.empty and len(df) >= 8:
-            return df.tail(max_rows).reset_index(drop=True)
-    except Exception as e:
-        if DEBUG_MODE:
-            st.warning(f"AKShare 15分钟数据失败，回退东财: {e}")
-
-    # 2) 东方财富分钟K线兜底
-    try:
-        df = fetch_em_minute_df(symbol, klt=15, lmt=1000)
         if df is not None and not df.empty:
             return df.tail(max_rows).reset_index(drop=True)
     except Exception as e:
         if DEBUG_MODE:
-            st.warning(f"东财 15分钟数据失败: {e}")
-
+            st.warning(f"15分钟数据获取失败: {e}")
     return None
 
 
@@ -642,85 +605,76 @@ def summarize_intraday_tf(df: pd.DataFrame, label: str):
         }
 
     df = df.copy()
-
-    # 样本很少时也给轻量判断，不直接 N/A
-    if len(df) < 12:
+    if len(df) >= 12:
+        df = add_indicators(df)
         latest = df.iloc[-1]
-        support = df["low"].min()
-        pressure = df["high"].max()
+        prev = df.iloc[-2] if len(df) > 1 else latest
 
-        if len(df) >= 3:
-            trend = "偏强" if latest["close"] > df["close"].iloc[0] else "偏弱"
+        trend = "震荡"
+        if pd.notna(latest["ema20"]) and latest["close"] > latest["ema20"]:
+            trend = "偏强"
+        if pd.notna(latest["ema20"]) and pd.notna(latest["ema60"]) and latest["close"] > latest["ema20"] > latest["ema60"]:
+            trend = "多头"
+        elif pd.notna(latest["ema20"]) and pd.notna(latest["ema60"]) and latest["close"] < latest["ema20"] < latest["ema60"]:
+            trend = "空头"
+
+        macd_state = "中性"
+        if pd.notna(latest["macd"]) and pd.notna(latest["macd_signal"]):
+            if latest["macd"] > latest["macd_signal"] and latest["macd_hist"] >= prev["macd_hist"]:
+                macd_state = "偏多"
+            elif latest["macd"] < latest["macd_signal"] and latest["macd_hist"] <= prev["macd_hist"]:
+                macd_state = "偏空"
+
+        support = df.tail(min(12, len(df)))["low"].min()
+        pressure = df.tail(min(12, len(df)))["high"].max()
+
+        bias_score = 0
+        if trend in ["多头", "偏强"]:
+            bias_score += 1
+        if macd_state == "偏多":
+            bias_score += 1
+        if pd.notna(latest["rsi14"]) and latest["rsi14"] > 55:
+            bias_score += 1
+        if pd.notna(latest["rsi14"]) and latest["rsi14"] < 45:
+            bias_score -= 1
+        if macd_state == "偏空":
+            bias_score -= 1
+        if trend == "空头":
+            bias_score -= 1
+
+        if bias_score >= 2:
+            bias = "多头占优"
+        elif bias_score <= -2:
+            bias = "空头占优"
         else:
-            trend = "简化观察"
-
-        bias = "轻量偏多" if latest["close"] > df["open"].mean() else "轻量偏空"
+            bias = "震荡分歧"
 
         return {
             "label": label,
-            "status": "样本较少",
+            "status": "有效",
             "trend": trend,
-            "rsi": None,
-            "macd_state": "简化判断",
+            "rsi": latest["rsi14"] if pd.notna(latest["rsi14"]) else None,
+            "macd_state": macd_state,
             "support": support,
             "pressure": pressure,
             "close": latest["close"],
             "bias": bias
         }
 
-    df = add_indicators(df)
     latest = df.iloc[-1]
-    prev = df.iloc[-2] if len(df) > 1 else latest
-
-    trend = "震荡"
-    if pd.notna(latest["ema20"]) and latest["close"] > latest["ema20"]:
-        trend = "偏强"
-    if pd.notna(latest["ema20"]) and pd.notna(latest["ema60"]) and latest["close"] > latest["ema20"] > latest["ema60"]:
-        trend = "多头"
-    elif pd.notna(latest["ema20"]) and pd.notna(latest["ema60"]) and latest["close"] < latest["ema20"] < latest["ema60"]:
-        trend = "空头"
-
-    macd_state = "中性"
-    if pd.notna(latest["macd"]) and pd.notna(latest["macd_signal"]):
-        if latest["macd"] > latest["macd_signal"] and latest["macd_hist"] >= prev["macd_hist"]:
-            macd_state = "偏多"
-        elif latest["macd"] < latest["macd_signal"] and latest["macd_hist"] <= prev["macd_hist"]:
-            macd_state = "偏空"
-
-    support = df.tail(min(12, len(df)))["low"].min()
-    pressure = df.tail(min(12, len(df)))["high"].max()
-
-    bias_score = 0
-    if trend in ["多头", "偏强"]:
-        bias_score += 1
-    if macd_state == "偏多":
-        bias_score += 1
-    if pd.notna(latest["rsi14"]) and latest["rsi14"] > 55:
-        bias_score += 1
-    if pd.notna(latest["rsi14"]) and latest["rsi14"] < 45:
-        bias_score -= 1
-    if macd_state == "偏空":
-        bias_score -= 1
-    if trend == "空头":
-        bias_score -= 1
-
-    if bias_score >= 2:
-        bias = "多头占优"
-    elif bias_score <= -2:
-        bias = "空头占优"
-    else:
-        bias = "震荡分歧"
+    support = df["low"].min()
+    pressure = df["high"].max()
 
     return {
         "label": label,
-        "status": "有效",
-        "trend": trend,
-        "rsi": latest["rsi14"] if pd.notna(latest["rsi14"]) else None,
-        "macd_state": macd_state,
+        "status": "样本较少",
+        "trend": "简化观察",
+        "rsi": None,
+        "macd_state": "N/A",
         "support": support,
         "pressure": pressure,
         "close": latest["close"],
-        "bias": bias
+        "bias": "轻量判断"
     }
 
 
@@ -733,18 +687,11 @@ def get_multi_timeframe_analysis(symbol: str):
     tf60 = summarize_intraday_tf(df60, "60分钟")
     tf120 = summarize_intraday_tf(df120, "120分钟")
 
-    score_map = {
-        "多头占优": 2,
-        "轻量偏多": 1,
-        "震荡分歧": 0,
-        "轻量偏空": -1,
-        "空头占优": -2
-    }
-
     score = 0
-    score += score_map.get(tf15["bias"], 0)
-    score += score_map.get(tf60["bias"], 0)
-    score += score_map.get(tf120["bias"], 0)
+    mapping = {"多头占优": 2, "轻量判断": 0, "震荡分歧": 0, "空头占优": -2}
+    score += mapping.get(tf15["bias"], 0)
+    score += mapping.get(tf60["bias"], 0)
+    score += mapping.get(tf120["bias"], 0)
 
     if score >= 3:
         final_view = "多周期共振偏多"
@@ -759,6 +706,227 @@ def get_multi_timeframe_analysis(symbol: str):
         "120m": tf120,
         "final_view": final_view
     }
+
+
+# ================= 核心数据流 =================
+@st.cache_data(ttl=60)
+def get_global_news():
+    url = "https://zhibo.sina.com.cn/api/zhibo/feed?page=1&page_size=60&zhibo_id=152&tag_id=0&dire=f&dpc=1"
+    res = fetch_json(url, extra_headers={"Referer": "https://finance.sina.com.cn/"})
+    news = []
+    if res and res.get("result", {}).get("data", {}).get("feed", {}).get("list"):
+        for item in res["result"]["data"]["feed"]["list"]:
+            text = re.sub(r'<[^>]+>', '', str(item.get("rich_text", "")).strip())
+            if len(text) > 15:
+                news.append(f"[{item.get('create_time', '')}] {text}")
+    return news
+
+
+@st.cache_data(ttl=60)
+def get_market_pulse():
+    pulse = {}
+    indices = {"上证指数": "1.000001", "深证成指": "0.399001", "创业板指": "0.399006"}
+    for name, code in indices.items():
+        url = f"https://push2.eastmoney.com/api/qt/stock/get?secid={code}&ut=fa5fd1943c7b386f172d6893dbfba10b&fltt=2&fields=f43,f170"
+        res = fetch_json(url)
+        if res and res.get("data"):
+            pulse[name] = {"price": safe_float(res["data"].get("f43")), "pct": safe_float(res["data"].get("f170"))}
+
+    cnh_url = "https://push2.eastmoney.com/api/qt/stock/get?secid=133.USDCNH&ut=fa5fd1943c7b386f172d6893dbfba10b&fltt=2&fields=f43,f170"
+    cnh_res = fetch_json(cnh_url)
+    if cnh_res and cnh_res.get("data"):
+        pulse["USD/CNH(离岸)"] = {"price": safe_float(cnh_res["data"].get("f43")), "pct": safe_float(cnh_res["data"].get("f170"))}
+    return pulse
+
+
+@st.cache_data(ttl=300)
+def get_hot_blocks():
+    try:
+        df = ak.stock_board_industry_name_em()
+        if df is not None and not df.empty:
+            top_blocks = df.sort_values(by="涨跌幅", ascending=False).head(10)
+            return top_blocks[["板块名称", "涨跌幅", "上涨家数", "下跌家数", "领涨股票"]].to_dict('records')
+    except Exception:
+        pass
+
+    time.sleep(1)
+
+    try:
+        df = ak.stock_board_concept_name_em()
+        if df is not None and not df.empty:
+            top_blocks = df.sort_values(by="涨跌幅", ascending=False).head(10)
+            return top_blocks[["板块名称", "涨跌幅", "上涨家数", "下跌家数", "领涨股票"]].to_dict('records')
+    except Exception:
+        pass
+
+    return None
+
+
+def get_stock_quote(symbol):
+    # 1) 优先 AKShare，修复高价股显示错误
+    try:
+        spot_df = ak.stock_zh_a_spot_em()
+        if spot_df is not None and not spot_df.empty:
+            row = spot_df[spot_df["代码"].astype(str) == str(symbol)]
+            if not row.empty:
+                row = row.iloc[0]
+                return {
+                    "name": row.get("名称", "未知"),
+                    "price": safe_float(row.get("最新价")),
+                    "pct": safe_float(row.get("涨跌幅")),
+                    "market_cap": safe_float(row.get("总市值")) / 100000000,
+                    "pe": row.get("市盈率-动态", "-"),
+                    "pb": row.get("市净率", "-"),
+                    "turnover": safe_float(row.get("换手率"))
+                }
+    except Exception as e:
+        if DEBUG_MODE:
+            st.warning(f"AKShare 实时行情失败，回退东财: {e}")
+
+    # 2) 回退东财
+    market = "1" if str(symbol).startswith(("6", "9", "5", "7")) else "0"
+    url = f"https://push2.eastmoney.com/api/qt/stock/get?secid={market}.{symbol}&ut=fa5fd1943c7b386f172d6893dbfba10b&fltt=2&fields=f58,f43,f60,f170,f116,f162,f168,f167"
+    res = fetch_json(url)
+    if res and res.get("data"):
+        d = res["data"]
+        prev_close = safe_float(d.get("f60"))
+        price = normalize_em_price(d.get("f43"), prev_close)
+        return {
+            "name": d.get("f58", "未知"),
+            "price": price,
+            "pct": safe_float(d.get("f170")),
+            "market_cap": safe_float(d.get("f116")) / 100000000,
+            "pe": d.get("f162", "-"),
+            "pb": d.get("f167", "-"),
+            "turnover": safe_float(d.get("f168"))
+        }
+    return None
+
+
+def get_kline(symbol, days=220):
+    end_date = datetime.now()
+    start_date = end_date - pd.Timedelta(days=days + 150)
+
+    start_str = start_date.strftime("%Y%m%d")
+    end_str = end_date.strftime("%Y%m%d")
+    start_str_bs = start_date.strftime("%Y-%m-%d")
+    end_str_bs = end_date.strftime("%Y-%m-%d")
+
+    # 1) AKShare 前复权
+    try:
+        df = ak.stock_zh_a_hist(symbol=str(symbol), period="daily", start_date=start_str, end_date=end_str, adjust="qfq")
+        if df is not None and not df.empty:
+            df = df.rename(columns={
+                "日期": "date", "开盘": "open", "收盘": "close",
+                "最高": "high", "最低": "low", "成交量": "volume",
+                "成交额": "amount", "换手率": "turnover_rate"
+            })
+            keep_cols = ["date", "open", "high", "low", "close", "volume", "turnover_rate"]
+            if all(col in df.columns for col in keep_cols):
+                df = df[keep_cols].copy()
+                df["date"] = pd.to_datetime(df["date"])
+                for col in ["open", "high", "low", "close", "volume", "turnover_rate"]:
+                    df[col] = pd.to_numeric(df[col], errors="coerce")
+                df = df.dropna().reset_index(drop=True)
+                if len(df) > 0:
+                    return df.tail(days).reset_index(drop=True)
+    except Exception as e:
+        if DEBUG_MODE:
+            st.warning(f"AKShare qfq 降级失败: {e}")
+
+    # 2) AKShare 不复权
+    try:
+        df = ak.stock_zh_a_hist(symbol=str(symbol), period="daily", start_date=start_str, end_date=end_str, adjust="")
+        if df is not None and not df.empty:
+            df = df.rename(columns={
+                "日期": "date", "开盘": "open", "收盘": "close",
+                "最高": "high", "最低": "low", "成交量": "volume"
+            })
+            keep_cols = ["date", "open", "high", "low", "close", "volume"]
+            if all(col in df.columns for col in keep_cols):
+                df = df[keep_cols].copy()
+                df["date"] = pd.to_datetime(df["date"])
+                for col in ["open", "high", "low", "close", "volume"]:
+                    df[col] = pd.to_numeric(df[col], errors="coerce")
+                df = df.dropna().reset_index(drop=True)
+                if len(df) > 0:
+                    return df.tail(days).reset_index(drop=True)
+    except Exception as e:
+        if DEBUG_MODE:
+            st.warning(f"AKShare raw 降级失败: {e}")
+
+    # 3) Baostock
+    try:
+        bs.login()
+        bs_code = f"sh.{symbol}" if str(symbol).startswith(("6", "9", "5", "7")) else f"sz.{symbol}"
+        rs = bs.query_history_k_data_plus(
+            bs_code,
+            "date,open,high,low,close,volume",
+            start_date=start_str_bs, end_date=end_str_bs,
+            frequency="d", adjustflag="2"
+        )
+        data_list = []
+        while (rs.error_code == '0') & rs.next():
+            data_list.append(rs.get_row_data())
+        bs.logout()
+
+        if data_list:
+            df = pd.DataFrame(data_list, columns=rs.fields)
+            df["date"] = pd.to_datetime(df["date"])
+            for col in ["open", "high", "low", "close", "volume"]:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+            df = df.dropna().sort_values("date").reset_index(drop=True)
+            if len(df) > 0:
+                return df.tail(days).reset_index(drop=True)
+    except Exception as e:
+        if DEBUG_MODE:
+            st.warning(f"Baostock 降级失败: {e}")
+        try:
+            bs.logout()
+        except Exception:
+            pass
+
+    # 4) Tushare
+    try:
+        if ts_token:
+            pro = ts.pro_api()
+            market = ".SH" if str(symbol).startswith(("6", "9", "5", "7")) else ".SZ"
+            ts_code = f"{symbol}{market}"
+            df = pro.daily(ts_code=ts_code, start_date=start_str, end_date=end_str)
+            if df is not None and not df.empty:
+                df = df.rename(columns={
+                    "trade_date": "date", "open": "open",
+                    "high": "high", "low": "low",
+                    "close": "close", "vol": "volume"
+                })
+                keep_cols = ["date", "open", "high", "low", "close", "volume"]
+                if all(col in df.columns for col in keep_cols):
+                    df = df[keep_cols].copy()
+                    df["date"] = pd.to_datetime(df["date"], format="%Y%m%d")
+                    for col in ["open", "high", "low", "close", "volume"]:
+                        df[col] = pd.to_numeric(df[col], errors="coerce")
+                    df = df.dropna().sort_values("date").reset_index(drop=True)
+                    if len(df) > 0:
+                        return df.tail(days).reset_index(drop=True)
+    except Exception as e:
+        if DEBUG_MODE:
+            st.warning(f"Tushare 兜底失败: {e}")
+
+    return None
+
+
+# ================= AI 计算核心 =================
+def call_ai(prompt, model="llama-3.3-70b-versatile", temperature=0.3):
+    try:
+        client = Groq(api_key=api_key)
+        completion = client.chat.completions.create(
+            messages=[{"role": "user", "content": prompt}],
+            model=model,
+            temperature=temperature
+        )
+        return completion.choices[0].message.content
+    except Exception as e:
+        return f"❌ AI 计算节点故障: {e}"
 
 
 # ================= 终端全局看板 =================
@@ -788,7 +956,7 @@ tab1, tab2, tab3, tab4 = st.tabs([
 ])
 
 
-# ================= Tab 1: 个股解析 =================
+# ================= Tab 1: 个股解析（只新增，不改其他模块） =================
 with tab1:
     with st.container(border=True):
         st.markdown("#### 🔎 个股雷达锁定（多维买卖点测算版）")
@@ -804,7 +972,7 @@ with tab1:
             elif len(symbol_input.strip()) != 6:
                 st.warning("代码规范验证失败")
             else:
-                with st.spinner("量子计算与数据提取中 (启用四重行情数据引擎)..."):
+                with st.spinner("量子计算与数据提取中 (启用四重行情数据引擎 + 多周期分析)..."):
                     quote = get_stock_quote(symbol_input)
                     df_kline = get_kline(symbol_input, days=220)
                     mtf = get_multi_timeframe_analysis(symbol_input)
@@ -814,12 +982,14 @@ with tab1:
                 else:
                     st.markdown("---")
                     name, price, pct = quote["name"], quote["price"], quote["pct"]
+
                     c1, c2, c3, c4 = st.columns(4)
                     c1.metric(f"{name}", f"{price:.2f}", f"{pct:.2f}%")
                     c2.metric("总市值(亿)", f"{quote['market_cap']:.1f}")
                     c3.metric("动态PE", f"{quote['pe']}")
                     c4.metric("换手率", f"{quote['turnover']:.2f}%")
 
+                    # ===== 原有日线分析 =====
                     if df_kline is None or len(df_kline) < 15:
                         st.warning("获取到的有效 K 线极少，仅能通过最新行情进行轻量化推演。")
                         with st.spinner("🧠 首席策略官撰写资产评估报告..."):
@@ -864,6 +1034,7 @@ with tab1:
                                 st.success(f"最近多头 FVG：{bull_fvg['date']} | 区间 {bull_fvg['bottom']:.2f} - {bull_fvg['top']:.2f}")
                             else:
                                 st.info("最近未检测到明显多头 FVG")
+
                             if smc["latest_bull_ob"]:
                                 st.success(f"最近多头 OB：{smc['latest_bull_ob']['date']} | 区间 {smc['latest_bull_ob']['bottom']:.2f} - {smc['latest_bull_ob']['top']:.2f}")
                             else:
@@ -875,6 +1046,7 @@ with tab1:
                                 st.error(f"最近空头 FVG：{bear_fvg['date']} | 区间 {bear_fvg['bottom']:.2f} - {bear_fvg['top']:.2f}")
                             else:
                                 st.info("最近未检测到明显空头 FVG")
+
                             if smc["latest_bear_ob"]:
                                 st.error(f"最近空头 OB：{smc['latest_bear_ob']['date']} | 区间 {smc['latest_bear_ob']['bottom']:.2f} - {smc['latest_bear_ob']['top']:.2f}")
                             else:
@@ -898,58 +1070,6 @@ with tab1:
                         z1.metric("最新收盘", f"{latest_close:.2f}")
                         z2.metric("动态支撑参考", f"{support_zone:.2f}")
                         z3.metric("动态压力参考", f"{pressure_zone:.2f}")
-
-                        with st.expander("📚 技术面模型说明"):
-                            st.write("""
-- EMA20/EMA60/EMA120：判断短中长期趋势
-- RSI14：判断超买超卖与动量强弱
-- MACD：判断动量拐点与趋势延续
-- ATR14：判断波动率，辅助止损空间评估
-- FVG (Fair Value Gap)：观察价格失衡区与回补机会
-- BOS (Break of Structure)：判断结构是否有效突破
-- Order Block：寻找潜在机构承接/抛压区域
-- MSS (Market Structure Shift)：趋势结构切换信号
-- EQH/EQL：识别流动性池
-- Premium/Discount Zone：判断当前位置贵/便宜
-- 流动性扫盘：识别假突破、诱多诱空
-""")
-
-                        with st.spinner("🧠 首席策略官进行多维深度解构(基本面+资金面+买卖点测算)..."):
-                            ema60_val = f"{tech['ema60']:.2f}" if pd.notna(tech['ema60']) else "数据不足"
-                            ema120_val = f"{tech['ema120']:.2f}" if pd.notna(tech['ema120']) else "数据不足"
-
-                            prompt = f"""
-你现在是顶级私募基金的操盘手（精通基本面与量价资金博弈）。
-
-请对股票 {name}({symbol_input}) 做一份极具实战价值的【估值 + 资金流 + 支撑/压力 + 精准买卖点】综合研判。
-
-【基础与资金博弈数据】
-- 现价: {price} (日涨跌幅: {pct}%)
-- 总市值: {quote['market_cap']} 亿 | 动态 PE: {quote['pe']} | 市净率 PB: {quote['pb']}
-- 当日换手率: {quote['turnover']}%
-- 近期量能状态: {tech['vol_state']}
-
-【核心技术与结构数据】
-- 趋势状态: {tech['trend']} | RSI14: {tech['rsi14']}
-- 最新收盘: {tech['latest_close']}
-- 短期生命线 (EMA20): {tech['ema20']}
-- 中长期基准 (EMA60/120): {ema60_val} / {ema120_val}
-- 结构特征: BOS({tech['bos_state']}), MSS({smc['mss']})
-- 异常流动性: 扫盘({tech['sweep_state']})
-- 核心磁区 (FVG/OB):
-  近期多头 FVG: {tech['nearest_bull_fvg']}
-  近期空头 FVG: {tech['nearest_bear_fvg']}
-
-【请务必按以下维度输出，不要说正确的废话】：
-1. 🏦 基本面与估值定位：结合市值与 PE/PB，判断当前估值是杀跌透支还是泡沫溢价
-2. 🌊 资金面穿透：结合今日换手率、量能状态及近期结构，推演主力机构是在悄悄吸筹、接力洗盘，还是派发跑路
-3. 🎯 支撑与压力测算：结合均线和空头/多头 FVG，给出具体的短线强支撑位和上行重压位
-4. ⚔️ 布局进入与离场推演：
-   - 【短期波段】进入点、离场点、止损位
-   - 【中长期配置】建仓逻辑与离场目标
-5. 结论定调：[看多 / 观察 / 谨慎 / 偏空]
-"""
-                            st.markdown(call_ai(prompt))
 
                     # ===== 新增：多周期分析 =====
                     st.markdown("##### ⏱️ 多周期技术分析（新增）")
@@ -997,33 +1117,96 @@ with tab1:
                     st.markdown("##### 🧠 多周期综合结论（新增）")
                     st.info(f"综合结论：**{mtf['final_view']}**")
 
-                    with st.spinner("🧠 多周期综合推演中..."):
-                        prompt = f"""
-你现在是职业交易员。
-请基于以下多周期数据，对 {name}({symbol_input}) 做多周期综合判断。
+                    # ===== 原有 AI 报告 + 新增多周期输入 =====
+                    with st.spinner("🧠 首席策略官进行多维深度解构 (基本面 + 资金面 + 买卖点测算 + 多周期共振)..."):
+                        if df_kline is not None and len(df_kline) >= 15:
+                            tech = summarize_technicals(add_indicators(df_kline))
+                            smc = tech["smc"]
+                            ema60_val = f"{tech['ema60']:.2f}" if pd.notna(tech['ema60']) else "数据不足"
+                            ema120_val = f"{tech['ema120']:.2f}" if pd.notna(tech['ema120']) else "数据不足"
 
-【15分钟】
-{mtf['15m']}
+                            prompt = f"""
+你现在是顶级私募基金的操盘手（精通基本面、量价资金博弈、多周期共振）。
 
-【60分钟】
-{mtf['60m']}
+请对股票 {name}({symbol_input}) 做一份极具实战价值的【估值 + 资金流 + 支撑/压力 + 精准买卖点 + 多周期共振】综合研判。
 
-【120分钟】
-{mtf['120m']}
+【基础与资金博弈数据】
+- 现价: {price} (日涨跌幅: {pct}%)
+- 总市值: {quote['market_cap']} 亿 | 动态 PE: {quote['pe']} | 市净率 PB: {quote['pb']}
+- 当日换手率: {quote['turnover']}%
+- 近期量能状态: {tech['vol_state']}
 
-【综合结论预判】
-{mtf['final_view']}
+【核心日线技术与结构数据】
+- 趋势状态: {tech['trend']} | RSI14: {tech['rsi14']}
+- 最新收盘: {tech['latest_close']}
+- 短期生命线 (EMA20): {tech['ema20']}
+- 中长期基准 (EMA60/120): {ema60_val} / {ema120_val}
+- 结构特征: BOS({tech['bos_state']}), MSS({smc['mss']})
+- 异常流动性: 扫盘({tech['sweep_state']})
+- 核心磁区 (FVG/OB):
+  近期多头 FVG: {tech['nearest_bull_fvg']}
+  近期空头 FVG: {tech['nearest_bear_fvg']}
+  近期多头 OB: {smc['latest_bull_ob']}
+  近期空头 OB: {smc['latest_bear_ob']}
+
+【新增：多周期分析】
+- 15分钟: {mtf['15m']}
+- 60分钟: {mtf['60m']}
+- 120分钟: {mtf['120m']}
+- 多周期综合结论: {mtf['final_view']}
+
+【请务必输出】
+1. 🏦 基本面与估值定位
+2. 🌊 资金面穿透
+3. 🎯 支撑与压力测算
+4. ⚔️ 布局进入与离场推演
+   - 【短期波段】
+   - 【中长期配置】
+5. ⏱️ 多周期共振判断
+   - 15分钟、60分钟、120分钟是否共振
+   - 是适合追涨、低吸、等回踩，还是观望
+6. 最后给出一句明确结论：
+   - 强势看多
+   - 偏多观察
+   - 震荡等待
+   - 谨慎偏空
+
+要求：
+- 语言要专业、直接、机构化
+- 不能空话
+- 尽量像真正交易员盘前计划
+"""
+                            st.markdown(call_ai(prompt))
+                        else:
+                            prompt = f"""
+你现在是顶级私募基金操盘手。
+请基于股票 {name}({symbol_input}) 当前基础数据与多周期结论做综合研判。
+
+【基础数据】
+- 现价: {price}
+- 日涨跌幅: {pct}%
+- 市值: {quote['market_cap']} 亿
+- 动态PE: {quote['pe']}
+- 市净率PB: {quote['pb']}
+- 换手率: {quote['turnover']}%
+
+【多周期分析】
+- 15分钟: {mtf['15m']}
+- 60分钟: {mtf['60m']}
+- 120分钟: {mtf['120m']}
+- 多周期综合结论: {mtf['final_view']}
 
 请输出：
-1. 三个周期是否共振
-2. 当前更适合追涨、低吸、等回踩还是观望
-3. 短线应该看哪个级别信号为主
-4. 最后给一句明确结论：强势看多 / 偏多观察 / 震荡等待 / 谨慎偏空
+1. 当前股性判断
+2. 多周期共振解读
+3. 短线交易建议
+4. 中线观察建议
+5. 最后一行给明确结论：看多 / 观察 / 谨慎 / 偏空
 """
-                        st.markdown(call_ai(prompt))
+                            st.markdown(call_ai(prompt))
 
 
-# ================= Tab 2: 宏观大盘推演 =================
+# ================= Tab 2: 宏观大盘推演（不改） =================
 with tab2:
     with st.container(border=True):
         st.markdown("#### 📊 全盘系统级推演")
@@ -1047,7 +1230,7 @@ with tab2:
                     st.markdown(call_ai(prompt, temperature=0.4))
 
 
-# ================= Tab 3: 热点资金板块 =================
+# ================= Tab 3: 热点资金板块（不改） =================
 with tab3:
     with st.container(border=True):
         st.markdown("#### 🔥 当日主力资金狂欢地 (附实战标的推荐)")
@@ -1065,7 +1248,6 @@ with tab3:
 
                         with st.spinner("🧠 首席游资操盘手拆解逻辑并筛选跟进标的..."):
                             blocks_str = "\n".join([f"{b['板块名称']} (涨幅:{b['涨跌幅']}%, 领涨龙头:{b['领涨股票']})" for b in blocks[:5]])
-
                             prompt = f"""
 作为顶级游资操盘手，请深度解读今日最强的 5 个板块及其领涨龙头：
 
@@ -1086,7 +1268,7 @@ with tab3:
                         st.error("获取板块数据失败，所有接口均处于熔断保护期。")
 
 
-# ================= Tab 4: 高阶情报终端 =================
+# ================= Tab 4: 高阶情报终端（不改） =================
 with tab4:
     st.markdown("#### 📡 机构级事件图谱与智能评级矩阵")
     st.write("追踪彭博、推特、美联储、特朗普等宏观变量。已深度适配移动端，引入极客量化风控模块。")
@@ -1116,12 +1298,10 @@ with tab4:
 ⚠️【排版严令：禁止使用 Markdown 表格】⚠️
 为了适配移动端设备的终端显示，你绝对不能使用表格！必须为每一个事件生成一个独立的情报卡片。
 
-请【严格根据快讯内容重写】下面方括号里的内容，绝对不要原样保留占位符文本。
-
 输出格式必须如下：
-### [评级Emoji] [[信源/人物]] [用5-15个字高度概括真实发生的事件标题]
+### [评级Emoji] [[信源/人物]] [真实事件标题]
 * ⏰ **时间截获**: [提取对应时间]
-* 📝 **情报简述**: [用1-2句话清晰说明发生了什么]
+* 📝 **情报简述**: [说明发生了什么]
 * 🎯 **受波及资产**: [指出利好/利空资产]
 * 🧠 **沙盘推演**: [一句话指出实质影响]
 * ☢️ **风控预警**: [一个简短硬核预警]
