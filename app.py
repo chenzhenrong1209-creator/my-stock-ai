@@ -1358,7 +1358,8 @@ with tab1:
    - 【短期波段】进入点与离场点建议
    - 【中长期配置】建仓点位与长线离场目标
 3. 结论定调：[看多 / 观察 / 谨慎 / 偏空]
-"""                               st.markdown(call_ai(prompt))
+"""
+                            st.markdown(call_ai(prompt))
                     else:
                         df_kline = add_indicators(df_kline)
                         tech = summarize_technicals(df_kline)
@@ -1410,127 +1411,128 @@ with tab1:
                         s2.metric("EQH / EQL", f"{eqh_count} / {eql_count}")
                         s3.metric("P/D Zone", pd_zone)
                         latest_close = tech["latest_close"]
-                    support_zone = min(tech["ema_short"], tech["ema_mid"])
-                    pressure_zone = max(tech["ema_short"], tech["ema_mid"])
-                    st.markdown("##### 🎯 动态支撑 / 压力")
-                    z1, z2, z3 = st.columns(3)
-                    z1.metric("最新收盘", f"{latest_close:.2f}")
-                    z2.metric("动态支撑参考", f"{support_zone:.2f}")
-                    z3.metric("动态压力参考", f"{pressure_zone:.2f}")
 
-                st.markdown("##### ⏱️ 多周期技术分析")
-                m1, m2, m3 = st.columns(3)
-                with m1:
-                    tf = mtf["15m"]
-                    st.markdown("**15分钟级别**")
-                    st.metric("偏向", tf["bias"])
-                    st.metric("趋势", tf["trend"])
-                    st.metric("MACD", tf["macd_state"])
-                    if tf["rsi"] is not None:
-                        st.metric("RSI", f"{tf['rsi']:.2f}")
-                    if tf["support"] is not None:
-                        st.caption(f"支撑: {tf['support']:.2f}")
-                    if tf["pressure"] is not None:
-                        st.caption(f"压力: {tf['pressure']:.2f}")
-                with m2:
-                    tf = mtf["60m"]
-                    st.markdown("**60分钟级别**")
-                    st.metric("偏向", tf["bias"])
-                    st.metric("趋势", tf["trend"])
-                    st.metric("MACD", tf["macd_state"])
-                    if tf["rsi"] is not None:
-                        st.metric("RSI", f"{tf['rsi']:.2f}")
-                    if tf["support"] is not None:
-                        st.caption(f"支撑: {tf['support']:.2f}")
-                    if tf["pressure"] is not None:
-                        st.caption(f"压力: {tf['pressure']:.2f}")
-                with m3:
-                    tf = mtf["120m"]
-                    st.markdown("**120分钟级别**")
-                    st.metric("偏向", tf["bias"])
-                    st.metric("趋势", tf["trend"])
-                    st.metric("MACD", tf["macd_state"])
-                    if tf["rsi"] is not None:
-                        st.metric("RSI", f"{tf['rsi']:.2f}")
-                    if tf["support"] is not None:
-                        st.caption(f"支撑: {tf['support']:.2f}")
-                    if tf["pressure"] is not None:
-                        st.caption(f"压力: {tf['pressure']:.2f}")
+                        support_zone = min(tech["ema_short"], tech["ema_mid"])
+                        pressure_zone = max(tech["ema_short"], tech["ema_mid"])
+                        st.markdown("##### 🎯 动态支撑 / 压力")
+                        z1, z2, z3 = st.columns(3)
+                        z1.metric("最新收盘", f"{latest_close:.2f}")
+                        z2.metric("动态支撑参考", f"{support_zone:.2f}")
+                        z3.metric("动态压力参考", f"{pressure_zone:.2f}")
 
-                st.markdown("##### 🧠 多周期综合结论")
-                st.info(f"综合结论：**{mtf['final_view']}**")
+                    st.markdown("##### ⏱️ 多周期技术分析")
+                    m1, m2, m3 = st.columns(3)
+                    with m1:
+                        tf = mtf["15m"]
+                        st.markdown("**15分钟级别**")
+                        st.metric("偏向", tf["bias"])
+                        st.metric("趋势", tf["trend"])
+                        st.metric("MACD", tf["macd_state"])
+                        if tf["rsi"] is not None:
+                            st.metric("RSI", f"{tf['rsi']:.2f}")
+                        if tf["support"] is not None:
+                            st.caption(f"支撑: {tf['support']:.2f}")
+                        if tf["pressure"] is not None:
+                            st.caption(f"压力: {tf['pressure']:.2f}")
+                    with m2:
+                        tf = mtf["60m"]
+                        st.markdown("**60分钟级别**")
+                        st.metric("偏向", tf["bias"])
+                        st.metric("趋势", tf["trend"])
+                        st.metric("MACD", tf["macd_state"])
+                        if tf["rsi"] is not None:
+                            st.metric("RSI", f"{tf['rsi']:.2f}")
+                        if tf["support"] is not None:
+                            st.caption(f"支撑: {tf['support']:.2f}")
+                        if tf["pressure"] is not None:
+                            st.caption(f"压力: {tf['pressure']:.2f}")
+                    with m3:
+                        tf = mtf["120m"]
+                        st.markdown("**120分钟级别**")
+                        st.metric("偏向", tf["bias"])
+                        st.metric("趋势", tf["trend"])
+                        st.metric("MACD", tf["macd_state"])
+                        if tf["rsi"] is not None:
+                            st.metric("RSI", f"{tf['rsi']:.2f}")
+                        if tf["support"] is not None:
+                            st.caption(f"支撑: {tf['support']:.2f}")
+                        if tf["pressure"] is not None:
+                            st.caption(f"压力: {tf['pressure']:.2f}")
 
-                with st.spinner(f"🧠 首席策略官正在使用 {selected_model} 进行多维深度解构..."):
-                    if df_kline is not None and len(df_kline) >= 15:
-                        tech = summarize_technicals(add_indicators(df_kline))
-                        smc = tech["smc"]
-                        ema_mid_val = f"{tech['ema_mid']:.2f}" if pd.notna(tech['ema_mid']) else "数据不足"
-                        ema_long_val = f"{tech['ema_long']:.2f}" if pd.notna(tech['ema_long']) else "数据不足"
-                        prompt = f"""
+                    st.markdown("##### 🧠 多周期综合结论")
+                    st.info(f"综合结论：**{mtf['final_view']}**")
 
+                    with st.spinner(f"🧠 首席策略官正在使用 {selected_model} 进行多维深度解构..."):
+                        if df_kline is not None and len(df_kline) >= 15:
+                            tech = summarize_technicals(add_indicators(df_kline))
+                            smc = tech["smc"]
+                            ema_mid_val = f"{tech['ema_mid']:.2f}" if pd.notna(tech['ema_mid']) else "数据不足"
+                            ema_long_val = f"{tech['ema_long']:.2f}" if pd.notna(tech['ema_long']) else "数据不足"
+                            prompt = f"""
 你现在是顶级私募基金的操盘手（精通基本面、量价资金博弈、多周期共振）。
 请对股票 {name}({symbol_input}) 做一份极具实战价值的【估值 + 资金流 + 支撑/压力 + 精准买卖点 + 多周期共振】综合研判。
 【基础与资金博弈数据】
-现价: {price} (日涨跌幅: {pct}%)
-总市值: {quote['market_cap']} 亿 | 动态 PE: {quote['pe']} | 市净率 PB: {quote['pb']}
-当日换手率: {quote['turnover']}%
-近期量能状态: {tech['vol_state']}
+- 现价: {price} (日涨跌幅: {pct}%)
+- 总市值: {quote['market_cap']} 亿 | 动态 PE: {quote['pe']} | 市净率 PB: {quote['pb']}
+- 当日换手率: {quote['turnover']}%
+- 近期量能状态: {tech['vol_state']}
 【核心日线技术与结构数据】
-趋势状态: {tech['trend']} | RSI14: {tech['rsi14']}
-最新收盘: {tech['latest_close']}
-短期生命线 (EMA{ema_short}): {tech['ema_short']}
-中长期基准 (EMA{ema_mid}/{ema_long}): {ema_mid_val} / {ema_long_val}
-结构特征: BOS({tech['bos_state']}), MSS({smc['mss']})
-异常流动性: 扫盘({tech['sweep_state']})
-核心磁区 (FVG/OB):
-近期多头 FVG: {tech['nearest_bull_fvg']}
-近期空头 FVG: {tech['nearest_bear_fvg']}
-近期多头 OB: {smc['latest_bull_ob']}
-近期空头 OB: {smc['latest_bear_ob']}
+- 趋势状态: {tech['trend']} | RSI14: {tech['rsi14']}
+- 最新收盘: {tech['latest_close']}
+- 短期生命线 (EMA{ema_short}): {tech['ema_short']}
+- 中长期基准 (EMA{ema_mid}/{ema_long}): {ema_mid_val} / {ema_long_val}
+- 结构特征: BOS({tech['bos_state']}), MSS({smc['mss']})
+- 异常流动性: 扫盘({tech['sweep_state']})
+- 核心磁区 (FVG/OB):
+  近期多头 FVG: {tech['nearest_bull_fvg']}
+  近期空头 FVG: {tech['nearest_bear_fvg']}
+  近期多头 OB: {smc['latest_bull_ob']}
+  近期空头 OB: {smc['latest_bear_ob']}
 【多周期分析】
-15分钟: {mtf['15m']}
-60分钟: {mtf['60m']}
-120分钟: {mtf['120m']}
-多周期综合结论: {mtf['final_view']}
+- 15分钟: {mtf['15m']}
+- 60分钟: {mtf['60m']}
+- 120分钟: {mtf['120m']}
+- 多周期综合结论: {mtf['final_view']}
 【请务必输出】
-🏦 基本面与估值定位
-🌊 资金面穿透
-🎯 支撑与压力测算
-⚔️ 布局进入与离场推演
-【短期波段】
-【中长期配置】
-⏱️ 多周期共振判断
-15分钟、60分钟、120分钟是否共振
-是适合追涨、低吸、等回踩，还是观望
-最后给出一句明确结论：强势看多 / 偏多观察 / 震荡等待 / 谨慎偏空
+1. 🏦 基本面与估值定位
+2. 🌊 资金面穿透
+3. 🎯 支撑与压力测算
+4. ⚔️ 布局进入与离场推演
+   - 【短期波段】
+   - 【中长期配置】
+5. ⏱️ 多周期共振判断
+   - 15分钟、60分钟、120分钟是否共振
+   - 是适合追涨、低吸、等回踩，还是观望
+6. 最后给出一句明确结论：强势看多 / 偏多观察 / 震荡等待 / 谨慎偏空
 要求：语言要专业、直接、机构化，不能空话，尽量像真正交易员盘前计划。
 """
-                     st.markdown(call_ai(prompt))
-                 else:
-                     prompt = f"""
+                            st.markdown(call_ai(prompt))
+                        else:
+                            prompt = f"""
 你现在是顶级私募基金操盘手。
 请基于股票 {name}({symbol_input}) 当前基础数据与多周期结论做综合研判。
 【基础数据】
-现价: {price}
-日涨跌幅: {pct}%
-市值: {quote['market_cap']} 亿
-动态 PE: {quote['pe']}
-市净率 PB: {quote['pb']}
-换手率: {quote['turnover']}%
+- 现价: {price}
+- 日涨跌幅: {pct}%
+- 市值: {quote['market_cap']} 亿
+- 动态 PE: {quote['pe']}
+- 市净率 PB: {quote['pb']}
+- 换手率: {quote['turnover']}%
 【多周期分析】
-15分钟: {mtf['15m']}
-60分钟: {mtf['60m']}
-120分钟: {mtf['120m']}
-多周期综合结论: {mtf['final_view']}
+- 15分钟: {mtf['15m']}
+- 60分钟: {mtf['60m']}
+- 120分钟: {mtf['120m']}
+- 多周期综合结论: {mtf['final_view']}
 请输出：
-当前股性判断
-多周期共振解读
-短线交易建议
-中线观察建议
-最后一行给明确结论：看多 / 观察 / 谨慎 / 偏空
+1. 当前股性判断
+2. 多周期共振解读
+3. 短线交易建议
+4. 中线观察建议
+5. 最后一行给明确结论：看多 / 观察 / 谨慎 / 偏空
 """
-                     st.markdown(call_ai(prompt))
-================= Tab 2: 宏观大盘推演 =================
+                            st.markdown(call_ai(prompt))
+
+# ================= Tab 2: 宏观大盘推演 =================
 with tab2:
     with st.container(border=True):
         st.markdown("#### 📊 全盘系统级推演")
@@ -1544,12 +1546,13 @@ with tab2:
 你现在是高盛首席宏观策略师。请基于当前 A 股与外汇的精准数据进行大局观推演：
 实时数据：{str(pulse_data)}
 请输出：
-市场全景定调（分化还是普涨）
-北向资金意愿推断（基于汇率）
-短期沙盘推演方向
+1. 市场全景定调（分化还是普涨）
+2. 北向资金意愿推断（基于汇率）
+3. 短期沙盘推演方向
 """
-             st.markdown(call_ai(prompt, temperature=0.4))
-================= Tab 3: 热点资金板块 =================
+                    st.markdown(call_ai(prompt, temperature=0.4))
+
+# ================= Tab 3: 热点资金板块 =================
 with tab3:
     with st.container(border=True):
         st.markdown("#### 🔥 当日主力资金狂欢地 (附实战标的推荐)")
@@ -1569,19 +1572,20 @@ with tab3:
 作为顶级游资操盘手，请深度解读今日最强的 5 个板块及其领涨龙头：
 {blocks_str}
 请输出：
-【核心驱动】这些板块背后的底层逻辑或共振政策利好是什么？
-【行情定性】这是存量博弈的一日游情绪宣泄，还是具备中线发酵潜力的主线？
-🎯 【个股配置与实战推荐】：
-基于上述板块逻辑和领涨股票，为散户推荐 2-3 只可以进行重点配置或埋伏的股票。
-对于推荐的每一只股票，请务必写明：
-股票名称与行业归属
-核心配置理由
-建议的入场姿势
+1. 【核心驱动】这些板块背后的底层逻辑或共振政策利好是什么？
+2. 【行情定性】这是存量博弈的一日游情绪宣泄，还是具备中线发酵潜力的主线？
+3. 🎯 【个股配置与实战推荐】：
+   基于上述板块逻辑和领涨股票，为散户推荐 2-3 只可以进行重点配置或埋伏的股票。
+   对于推荐的每一只股票，请务必写明：
+   - 股票名称与行业归属
+   - 核心配置理由
+   - 建议的入场姿势
 """
-                   st.markdown(call_ai(prompt, temperature=0.4))
-           else:
-               st.error("获取板块数据失败，所有接口均处于熔断保护期。")
-================= Tab 4: 高阶情报终端 =================
+                            st.markdown(call_ai(prompt, temperature=0.4))
+                    else:
+                        st.error("获取板块数据失败，所有接口均处于熔断保护期。")
+
+# ================= Tab 4: 高阶情报终端 =================
 with tab4:
     st.markdown("#### 📡 机构级事件图谱与智能评级矩阵")
     st.write("追踪彭博、推特、美联储、特朗普等宏观变量。已深度适配移动端，引入极客量化风控模块。")
@@ -1605,13 +1609,13 @@ with tab4:
 ⚠️ 【排版严令：禁止使用 Markdown 表格】 ⚠️
 为了适配移动端设备的终端显示，你绝对不能使用表格！必须为每一个事件生成一个独立的情报卡片。
 输出格式必须如下：
-[评级 Emoji] [[信源/人物]] [真实事件标题]
-⏰ 时间截获: [提取对应时间]
-📝 情报简述: [说明发生了什么]
-🎯 受波及资产: [指出利好/利空资产]
-🧠 沙盘推演: [一句话指出实质影响]
-☢️ 风控预警: [一个简短硬核预警]
-
+### [评级 Emoji] [[信源/人物]] [真实事件标题]
+* ⏰ **时间截获**: [提取对应时间]
+* 📝 **情报简述**: [说明发生了什么]
+* 🎯 **受波及资产**: [指出利好/利空资产]
+* 🧠 **沙盘推演**: [一句话指出实质影响]
+* ☢️ **风控预警**: [一个简短硬核预警]
+---
 评级标准：
 🔴 核心：直接引发巨震的突发、大选级人物强硬表态、黑天鹅事件
 🟡 重要：关键经济数据、行业重磅政策、流动性显著异动
@@ -1622,69 +1626,71 @@ with tab4:
                         report = call_ai(prompt, temperature=0.2)
                         st.markdown("---")
                         st.markdown(report)
-================= Tab 5: 智瞰龙虎榜解析 =================
+
+# ================= Tab 5: 智瞰龙虎榜解析 =================
 with tab5:
     with st.container(border=True):
         st.markdown("#### 🐉 智瞰龙虎榜 AI 分析集群")
         st.write("获取游资动态，挖掘次日爆发潜力股，识别高风险陷阱。")
-    col_date, col_btn = st.columns([1, 2])
-    with col_date:
-        lhb_date = st.date_input("选择龙虎榜日期", datetime.now() - timedelta(days=1))
-    with col_btn:
-        st.write("") # 占位用于垂直对齐
-        run_lhb_btn = st.button("🚀 启动智瞰龙虎分析集群", type="primary", use_container_width=True)
 
-    if run_lhb_btn:
-        if not api_key:
-            st.error("配置缺失: GROQ_API_KEY")
-        else:
-            date_str = lhb_date.strftime('%Y-%m-%d')
-            with st.spinner(f"正在深入节点获取 {date_str} 龙虎榜数据..."):
-                fetcher = LonghubangDataFetcher()
-                raw_result = fetcher.get_longhubang_data(date_str)
+        col_date, col_btn = st.columns([1, 2])
+        with col_date:
+            lhb_date = st.date_input("选择龙虎榜日期", datetime.now() - timedelta(days=1))
+        with col_btn:
+            st.write("") # 占位用于垂直对齐
+            run_lhb_btn = st.button("🚀 启动智瞰龙虎分析集群", type="primary", use_container_width=True)
 
-            if raw_result and raw_result.get('data'):
-                data_list = raw_result['data']
-                summary = fetcher.analyze_data_summary(data_list)
-                formatted_data = fetcher.format_data_for_ai(data_list, summary)
-
-                st.success(f"✓ 成功获取 {len(data_list)} 条记录！激活AI集群协同计算...")
-
-                agents = LonghubangAgents()
-                all_analyses = []
-
-                # 1. 游资行为分析
-                with st.spinner("🎯 游资行为分析师正在勾勒画像..."):
-                    yz_res = agents.youzi_behavior_analyst(formatted_data, summary)
-                    all_analyses.append(yz_res)
-                    with st.expander("🎯 游资行为分析报告", expanded=False):
-                        st.markdown(yz_res['analysis'])
-
-                # 2. 个股潜力分析
-                with st.spinner("📈 个股潜力分析师正在深度挖掘爆发股..."):
-                    stock_res = agents.stock_potential_analyst(formatted_data, summary)
-                    all_analyses.append(stock_res)
-                    with st.expander("📈 个股潜力分析报告", expanded=False):
-                        st.markdown(stock_res['analysis'])
-
-                # 3. 题材追踪分析
-                with st.spinner("🔥 题材追踪分析师正在定位主线轮动..."):
-                    theme_res = agents.theme_tracker_analyst(formatted_data, summary)
-                    all_analyses.append(theme_res)
-                    with st.expander("🔥 题材追踪分析报告", expanded=False):
-                        st.markdown(theme_res['analysis'])
-
-                # 4. 风险控制分析
-                with st.spinner("⚠️ 风险控制专家正在排除雷区与资金陷阱..."):
-                    risk_res = agents.risk_control_specialist(formatted_data, summary)
-                    all_analyses.append(risk_res)
-                    with st.expander("⚠️ 风险控制扫描报告", expanded=False):
-                        st.markdown(risk_res['analysis'])
-
-                # 5. 首席策略师综合评估
-                with st.spinner("👔 首席策略师正在综合各方情报，生成最终军令状..."):
-                    chief_res = agents.chief_strategist(all_analyses)
-                    st.markdown("### 👔 首席策略师最终研判")
-                    st.markdown(chief_res['analysis'])
+        if run_lhb_btn:
+            if not api_key:
+                st.error("配置缺失: GROQ_API_KEY")
             else:
-                st.error(f"未能获取到 {date_str} 的龙虎榜数据，该日可能为周末或 API 暂时受限。")
+                date_str = lhb_date.strftime('%Y-%m-%d')
+                with st.spinner(f"正在深入节点获取 {date_str} 龙虎榜数据..."):
+                    fetcher = LonghubangDataFetcher()
+                    raw_result = fetcher.get_longhubang_data(date_str)
+
+                if raw_result and raw_result.get('data'):
+                    data_list = raw_result['data']
+                    summary = fetcher.analyze_data_summary(data_list)
+                    formatted_data = fetcher.format_data_for_ai(data_list, summary)
+
+                    st.success(f"✓ 成功获取 {len(data_list)} 条记录！激活AI集群协同计算...")
+
+                    agents = LonghubangAgents()
+                    all_analyses = []
+
+                    # 1. 游资行为分析
+                    with st.spinner("🎯 游资行为分析师正在勾勒画像..."):
+                        yz_res = agents.youzi_behavior_analyst(formatted_data, summary)
+                        all_analyses.append(yz_res)
+                        with st.expander("🎯 游资行为分析报告", expanded=False):
+                            st.markdown(yz_res['analysis'])
+
+                    # 2. 个股潜力分析
+                    with st.spinner("📈 个股潜力分析师正在深度挖掘爆发股..."):
+                        stock_res = agents.stock_potential_analyst(formatted_data, summary)
+                        all_analyses.append(stock_res)
+                        with st.expander("📈 个股潜力分析报告", expanded=False):
+                            st.markdown(stock_res['analysis'])
+
+                    # 3. 题材追踪分析
+                    with st.spinner("🔥 题材追踪分析师正在定位主线轮动..."):
+                        theme_res = agents.theme_tracker_analyst(formatted_data, summary)
+                        all_analyses.append(theme_res)
+                        with st.expander("🔥 题材追踪分析报告", expanded=False):
+                            st.markdown(theme_res['analysis'])
+
+                    # 4. 风险控制分析
+                    with st.spinner("⚠️ 风险控制专家正在排除雷区与资金陷阱..."):
+                        risk_res = agents.risk_control_specialist(formatted_data, summary)
+                        all_analyses.append(risk_res)
+                        with st.expander("⚠️ 风险控制扫描报告", expanded=False):
+                            st.markdown(risk_res['analysis'])
+
+                    # 5. 首席策略师综合评估
+                    with st.spinner("👔 首席策略师正在综合各方情报，生成最终军令状..."):
+                        chief_res = agents.chief_strategist(all_analyses)
+                        st.markdown("### 👔 首席策略师最终研判")
+                        st.markdown(chief_res['analysis'])
+                else:
+                    st.error(f"未能获取到 {date_str} 的龙虎榜数据，该日可能为周末或 API 暂时受限。")
