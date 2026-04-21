@@ -16,7 +16,6 @@ from collections import Counter
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import warnings
-import concurrent.futures # 新增：用于并发加速网络请求
 
 warnings.filterwarnings('ignore')
 
@@ -158,7 +157,7 @@ def normalize_em_price(raw_price, prev_close=None):
     if raw_price > 100000:
         return raw_price / 1000
     if raw_price > 10000:
-        return raw_price / 10
+        return raw_price / 100
     if raw_price > 1000:
         return raw_price / 10
     return raw_price
@@ -1309,6 +1308,7 @@ else:
 st.markdown("<br>", unsafe_allow_html=True)
 
 # ================= 终端功能选项卡 =================
+# 新增 tab5 龙虎榜模块
 tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "🎯 I. 个股标的解析",
     "📈 II. 宏观大盘推演",
@@ -1317,7 +1317,7 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "🐉 V. 智瞰龙虎榜解析"
 ])
 
-# ================= Tab 1: 个股解析 (已完成深度优化版) =================
+# ================= Tab 1: 个股解析 =================
 with tab1:
     with st.container(border=True):
         st.markdown("#### 🔎 个股雷达锁定（多维买卖点测算版）")
@@ -1325,26 +1325,18 @@ with tab1:
         with col1:
             symbol_input = st.text_input("标的代码", placeholder="例：600519")
             analyze_btn = st.button("启动核心算法", type="primary", use_container_width=True)
-            
         if analyze_btn:
             if not api_key:
                 st.error("配置缺失: GROQ_API_KEY")
             elif len(symbol_input.strip()) != 6:
-                st.warning("代码规范验证失败，请输入有效的6位股票代码。")
+                st.warning("代码规范验证失败")
             else:
-                # 核心优化：将原本串行的三大网络请求改为并发执行
-                with st.spinner("🚀 并发引擎已启动，多线程极速提取数据中..."):
-                    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-                        future_quote = executor.submit(get_stock_quote, symbol_input)
-                        future_kline = executor.submit(get_kline, symbol_input, 220)
-                        future_mtf = executor.submit(get_multi_timeframe_analysis, symbol_input)
-                        
-                        quote = future_quote.result()
-                        df_kline = future_kline.result()
-                        mtf = future_mtf.result()
-
+                with st.spinner("量子计算与数据提取中 (启用四重行情数据引擎 + 多周期分析)..."):
+                    quote = get_stock_quote(symbol_input)
+                    df_kline = get_kline(symbol_input, days=220)
+                    mtf = get_multi_timeframe_analysis(symbol_input)
                 if not quote:
-                    st.error("无法捕获行情资产，请检查代码或网络连接。")
+                    st.error("无法捕获行情资产。")
                 else:
                     st.markdown("---")
                     name, price, pct = quote["name"], quote["price"], quote["pct"]
@@ -1412,46 +1404,4 @@ with tab1:
 
                         st.markdown("##### 🏗️ 市场结构补充")
                         s1, s2, s3 = st.columns(3)
-                        # 修复：补全原代码被异常截断的地方
-                        eqh_count = len(smc["eqh"]) if smc["eqh"] else 0
-                        eql_count = len(smc["eql"]) if smc["eql"] else 0
-                        s1.metric("等高点 (EQH)", f"{eqh_count} 处")
-                        s2.metric("等低点 (EQL)", f"{eql_count} 处")
-                        s3.metric("溢价/折价区", smc["pd_zone"]["zone"] if smc["pd_zone"] else "N/A")
-
-                        st.markdown("##### ⏳ 多周期共振分析 (15m/60m/120m)")
-                        st.info(f"多周期综合判断：**{mtf['final_view']}**")
-
-                        # 新增：大模型最终研判输出环节
-                        with st.spinner("🧠 首席策略官正在进行深度复盘与推演..."):
-                            prompt = f"""
-请作为顶级私募策略师，对 {name} ({symbol_input}) 进行深度技术与结构分析：
-【核心数据】
-- 最新价：{price:.2f}，涨跌幅：{pct:.2f}%
-- 趋势：{tech['trend']}，量能：{tech['vol_state']}
-- MACD：{tech['macd_state']}，RSI：{tech['rsi14']:.2f}
-- 结构特征：BOS状态[{tech['bos_state']}]，扫盘状态[{tech['sweep_state']}]
-- 多周期共振：{mtf['final_view']}
-
-请基于以上数据，提供：
-1. 短期资金博弈与技术形态解析
-2. 关键阻力与支撑位预判（结合FVG/OB/溢价区）
-3. 具体的交易策略（左侧潜伏/右侧追涨/止损位设定）
-4. 明确的后市结论（看多/看空/观望）
-"""
-                            ai_analysis = call_ai(prompt)
-                            st.markdown("### 🤖 AI 智能投研决策书")
-                            st.success(ai_analysis)
-
-# 占位：其他未展示完整逻辑的 Tab（保持原样不变动）
-with tab2:
-    pass
-
-with tab3:
-    pass
-
-with tab4:
-    pass
-
-with tab5:
-    pass
+                        eqh_count = len(smc["eqh"]) if smc["eqh"]
