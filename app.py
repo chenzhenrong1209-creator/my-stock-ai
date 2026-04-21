@@ -1047,6 +1047,7 @@ class LonghubangAgents:
 
         prompt = f"""
 你是一名资深的个股研究专家和短线交易高手，精通技术分析和资金分析，擅长从龙虎榜中挖掘短期爆发股。
+
 【龙虎榜数据概况】
 记录总数: {summary.get('total_records', 0)}
 涉及股票: {summary.get('total_stocks', 0)} 只
