@@ -1358,8 +1358,7 @@ with tab1:
    - 【短期波段】进入点与离场点建议
    - 【中长期配置】建仓点位与长线离场目标
 3. 结论定调：[看多 / 观察 / 谨慎 / 偏空]
-"""
-                            st.markdown(call_ai(prompt))
+"""                               st.markdown(call_ai(prompt))
                     else:
                         df_kline = add_indicators(df_kline)
                         tech = summarize_technicals(df_kline)
