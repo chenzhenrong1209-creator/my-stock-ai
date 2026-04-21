@@ -56,7 +56,7 @@ st.markdown("""
 
 st.title("🏦 AI 智能量化投研终端")
 st.markdown(
-    f"<div class='terminal-header'>TERMINAL BUILD v6.4.1 | SYS_TIME: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | MULTI-TF HOTFIX + SECTOR ANTI-MELTDOWN</div>",
+    f"<div class='terminal-header'>TERMINAL BUILD v6.4.0 | SYS_TIME: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | MULTI-TF HOTFIX + MANUAL OVERRIDE</div>",
     unsafe_allow_html=True
 )
 
@@ -66,6 +66,7 @@ api_key = st.secrets.get("GROQ_API_KEY", "")
 with st.sidebar:
     st.header("⚙️ 终端控制台")
 
+    # 新增：手动选择 LLM 模型
     st.markdown("### 🧠 核心推理引擎")
     selected_model = st.selectbox(
         "选择大模型",
@@ -74,6 +75,7 @@ with st.sidebar:
         help="手动指定底层计算模型，精准控制分析逻辑"
     )
 
+    # 新增：手动干预技术参数
     st.markdown("### 🎛️ 策略参数微调")
     with st.expander("自定义均线周期 (手动输入)", expanded=False):
         ema_short = st.number_input("短期 EMA", min_value=5, max_value=50, value=20, step=1)
@@ -87,7 +89,7 @@ with st.sidebar:
     st.markdown("### 📡 数据连通性")
     st.success("行情引流 : ACTIVE")
     st.success("7x24快讯 : ACTIVE")
-    st.success("板块扫描 : ACTIVE (防风控自适应通道)")
+    st.success("板块扫描 : ACTIVE (带熔断保护)")
     st.success("技术结构引擎 : ACTIVE")
     st.success("多周期分析 : ACTIVE (15m / 60m / 120m)")
     st.success("智瞰龙虎榜 : ACTIVE")
@@ -666,40 +668,23 @@ def get_market_pulse():
         pulse["USD/CNH(离岸)"] = {"price": safe_float(cnh_res["data"].get("f43")), "pct": safe_float(cnh_res["data"].get("f170"))}
     return pulse
 
-# --- NEW: 优化与自适应防熔断的热点板块获取 ---
-@st.cache_data(ttl=1800, show_spinner=False)
+@st.cache_data(ttl=300)
 def get_hot_blocks():
-    """优化后的热点板块数据获取，加入多源轮询与指数退避重试"""
-    endpoints = [
-        {"func": ak.stock_board_industry_name_em, "name_col": "板块名称"},
-        {"func": ak.stock_board_concept_name_em, "name_col": "板块名称"},
-        {"func": ak.stock_board_industry_name_ths, "name_col": "板块"}
-    ]
-    
-    for attempt in range(3):
-        for ep in endpoints:
-            try:
-                df = ep["func"]()
-                if df is not None and not df.empty:
-                    if ep["name_col"] in df.columns and ep["name_col"] != "板块名称":
-                        df = df.rename(columns={ep["name_col"]: "板块名称"})
-                    
-                    if "涨跌幅" not in df.columns:
-                        continue
-                        
-                    top_blocks = df.sort_values(by="涨跌幅", ascending=False).head(10)
-                    
-                    # 统一列口径，缺少的列用占位符补齐，防止下游报错
-                    req_cols = ["板块名称", "涨跌幅", "上涨家数", "下跌家数", "领涨股票"]
-                    for col in req_cols:
-                        if col not in top_blocks.columns:
-                            top_blocks[col] = "-" if col == "领涨股票" else 0
-                            
-                    return top_blocks[req_cols].to_dict('records')
-            except Exception:
-                continue
-        # 如果一轮接口全挂，指数退避休眠再试 (1秒, 2秒, 4秒)
-        time.sleep(2 ** attempt) 
+    try:
+        df = ak.stock_board_industry_name_em()
+        if df is not None and not df.empty:
+            top_blocks = df.sort_values(by="涨跌幅", ascending=False).head(10)
+            return top_blocks[["板块名称", "涨跌幅", "上涨家数", "下跌家数", "领涨股票"]].to_dict('records')
+    except Exception:
+        pass
+    time.sleep(1)
+    try:
+        df = ak.stock_board_concept_name_em()
+        if df is not None and not df.empty:
+            top_blocks = df.sort_values(by="涨跌幅", ascending=False).head(10)
+            return top_blocks[["板块名称", "涨跌幅", "上涨家数", "下跌家数", "领涨股票"]].to_dict('records')
+    except Exception:
+        pass
     return None
 
 def get_stock_quote(symbol):
@@ -852,6 +837,7 @@ def call_ai(prompt, model=None, temperature=0.3):
         return completion.choices[0].message.content
     except Exception as e:
         return f"❌ AI 计算节点故障: {e}"
+
 
 # ================= 智瞰龙虎榜数据与分析模块 =================
 class LonghubangDataFetcher:
@@ -1304,6 +1290,7 @@ class LonghubangAgents:
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
         }
 
+
 # ================= 终端全局看板 =================
 st.markdown("### 🌍 宏观市场实时看板")
 pulse_data = get_market_pulse()
@@ -1321,6 +1308,7 @@ else:
 st.markdown("<br>", unsafe_allow_html=True)
 
 # ================= 终端功能选项卡 =================
+# 新增 tab5 龙虎榜模块
 tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "🎯 I. 个股标的解析",
     "📈 II. 宏观大盘推演",
@@ -1423,13 +1411,13 @@ with tab1:
                         s2.metric("EQH / EQL", f"{eqh_count} / {eql_count}")
                         s3.metric("P/D Zone", pd_zone)
                         latest_close = tech["latest_close"]
-                        support_zone = min(tech["ema_short"], tech["ema_mid"])
-                        pressure_zone = max(tech["ema_short"], tech["ema_mid"])
-                        st.markdown("##### 🎯 动态支撑 / 压力")
-                        z1, z2, z3 = st.columns(3)
-                        z1.metric("最新收盘", f"{latest_close:.2f}")
-                        z2.metric("动态支撑参考", f"{support_zone:.2f}")
-                        z3.metric("动态压力参考", f"{pressure_zone:.2f}")
+                    support_zone = min(tech["ema_short"], tech["ema_mid"])
+                    pressure_zone = max(tech["ema_short"], tech["ema_mid"])
+                    st.markdown("##### 🎯 动态支撑 / 压力")
+                    z1, z2, z3 = st.columns(3)
+                    z1.metric("最新收盘", f"{latest_close:.2f}")
+                    z2.metric("动态支撑参考", f"{support_zone:.2f}")
+                    z3.metric("动态压力参考", f"{pressure_zone:.2f}")
 
                 st.markdown("##### ⏱️ 多周期技术分析")
                 m1, m2, m3 = st.columns(3)
@@ -1485,8 +1473,7 @@ with tab1:
 请对股票 {name}({symbol_input}) 做一份极具实战价值的【估值 + 资金流 + 支撑/压力 + 精准买卖点 + 多周期共振】综合研判。
 【基础与资金博弈数据】
 现价: {price} (日涨跌幅: {pct}%)
-总市值: {quote['market_cap']} 亿 |
-动态 PE: {quote['pe']} | 市净率 PB: {quote['pb']}
+总市值: {quote['market_cap']} 亿 | 动态 PE: {quote['pe']} | 市净率 PB: {quote['pb']}
 当日换手率: {quote['turnover']}%
 近期量能状态: {tech['vol_state']}
 【核心日线技术与结构数据】
@@ -1519,9 +1506,9 @@ with tab1:
 最后给出一句明确结论：强势看多 / 偏多观察 / 震荡等待 / 谨慎偏空
 要求：语言要专业、直接、机构化，不能空话，尽量像真正交易员盘前计划。
 """
-                        st.markdown(call_ai(prompt))
-                    else:
-                        prompt = f"""
+                     st.markdown(call_ai(prompt))
+                 else:
+                     prompt = f"""
 你现在是顶级私募基金操盘手。
 请基于股票 {name}({symbol_input}) 当前基础数据与多周期结论做综合研判。
 【基础数据】
@@ -1543,9 +1530,8 @@ with tab1:
 中线观察建议
 最后一行给明确结论：看多 / 观察 / 谨慎 / 偏空
 """
-                        st.markdown(call_ai(prompt))
-
-# ================= Tab 2: 宏观大盘推演 =================
+                     st.markdown(call_ai(prompt))
+================= Tab 2: 宏观大盘推演 =================
 with tab2:
     with st.container(border=True):
         st.markdown("#### 📊 全盘系统级推演")
@@ -1563,9 +1549,8 @@ with tab2:
 北向资金意愿推断（基于汇率）
 短期沙盘推演方向
 """
-                    st.markdown(call_ai(prompt, temperature=0.4))
-
-# ================= Tab 3: 热点资金板块 =================
+             st.markdown(call_ai(prompt, temperature=0.4))
+================= Tab 3: 热点资金板块 =================
 with tab3:
     with st.container(border=True):
         st.markdown("#### 🔥 当日主力资金狂欢地 (附实战标的推荐)")
@@ -1574,31 +1559,11 @@ with tab3:
             if not api_key:
                 st.error("配置缺失: GROQ_API_KEY")
             else:
-                with st.spinner("深潜获取板块异动数据... (启用指数退避与多源轮询防熔断)"):
+                with st.spinner("深潜获取东方财富板块异动数据... (若遇熔断将自动切换备用数据源)"):
                     blocks = get_hot_blocks()
                     if blocks:
                         df_blocks = pd.DataFrame(blocks)
-                        
-                        # --- 创意功能：资金情绪仪表盘 ---
-                        st.markdown("##### 📊 TOP10 资金情绪热力矩阵")
-                        m1, m2, m3 = st.columns(3)
-                        top_name = df_blocks.iloc[0]["板块名称"]
-                        top_pct = pd.to_numeric(df_blocks.iloc[0]["涨跌幅"], errors='coerce')
-                        m1.metric("今日最强风口", f"{top_name}", f"{top_pct:.2f}%" if pd.notna(top_pct) else "N/A")
-                        
-                        avg_pct = pd.to_numeric(df_blocks["涨跌幅"], errors='coerce').mean()
-                        m2.metric("TOP10 平均涨幅", f"{avg_pct:.2f}%" if pd.notna(avg_pct) else "N/A")
-                        
-                        try:
-                            up_count = pd.to_numeric(df_blocks["上涨家数"], errors='coerce').sum()
-                            down_count = pd.to_numeric(df_blocks["下跌家数"], errors='coerce').sum()
-                            m3.metric("热点板块赚钱效应", f"{int(up_count)}涨 / {int(down_count)}跌")
-                        except:
-                            m3.metric("热点板块赚钱效应", "数据暂缺")
-                            
-                        st.markdown("##### 📝 板块异动明细")
                         st.dataframe(df_blocks, use_container_width=True, hide_index=True)
-                        
                         with st.spinner("🧠 首席游资操盘手拆解逻辑并筛选跟进标的..."):
                             blocks_str = "\n".join([f"{b['板块名称']} (涨幅:{b['涨跌幅']}%, 领涨龙头:{b['领涨股票']})" for b in blocks[:5]])
                             prompt = f"""
@@ -1614,11 +1579,10 @@ with tab3:
 核心配置理由
 建议的入场姿势
 """
-                            st.markdown(call_ai(prompt, temperature=0.4))
-                    else:
-                        st.error("⚠️ 获取板块数据失败，所有备用接口均处于熔断保护期。请等待 15-30 分钟后系统自动解除限制。")
-
-# ================= Tab 4: 高阶情报终端 =================
+                   st.markdown(call_ai(prompt, temperature=0.4))
+           else:
+               st.error("获取板块数据失败，所有接口均处于熔断保护期。")
+================= Tab 4: 高阶情报终端 =================
 with tab4:
     st.markdown("#### 📡 机构级事件图谱与智能评级矩阵")
     st.write("追踪彭博、推特、美联储、特朗普等宏观变量。已深度适配移动端，引入极客量化风控模块。")
@@ -1643,11 +1607,11 @@ with tab4:
 为了适配移动端设备的终端显示，你绝对不能使用表格！必须为每一个事件生成一个独立的情报卡片。
 输出格式必须如下：
 [评级 Emoji] [[信源/人物]] [真实事件标题]
-⏰  时间截获 : [提取对应时间]
-📝  情报简述 : [说明发生了什么]
-🎯  受波及资产 : [指出利好/利空资产]
-🧠  沙盘推演 : [一句话指出实质影响]
-☢️  风控预警 : [一个简短硬核预警]
+⏰ 时间截获: [提取对应时间]
+📝 情报简述: [说明发生了什么]
+🎯 受波及资产: [指出利好/利空资产]
+🧠 沙盘推演: [一句话指出实质影响]
+☢️ 风控预警: [一个简短硬核预警]
 
 评级标准：
 🔴 核心：直接引发巨震的突发、大选级人物强硬表态、黑天鹅事件
@@ -1659,8 +1623,7 @@ with tab4:
                         report = call_ai(prompt, temperature=0.2)
                         st.markdown("---")
                         st.markdown(report)
-
-# ================= Tab 5: 智瞰龙虎榜解析 =================
+================= Tab 5: 智瞰龙虎榜解析 =================
 with tab5:
     with st.container(border=True):
         st.markdown("#### 🐉 智瞰龙虎榜 AI 分析集群")
