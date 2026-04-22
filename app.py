@@ -1,5 +1,5 @@
 # ==============================================================================
-# gemini最新版量化终端策略4.20版本 (龙虎榜价格基准优化版)
+# gemini最新版量化终端策略4.20版本 (龙虎榜价格基准优化 + 严格语法修复版)
 # ==============================================================================
 import streamlit as st
 from groq import Groq
@@ -59,7 +59,7 @@ st.markdown("""
 
 st.title("🏦 AI 智能量化投研终端")
 st.markdown(
-    f"<div class='terminal-header'>TERMINAL BUILD v6.4.1 | SYS_TIME: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | MULTI-TF HOTFIX + MANUAL OVERRIDE + LHB PRICE FIX</div>",
+    f"<div class='terminal-header'>TERMINAL BUILD v6.4.2 | SYS_TIME: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | MULTI-TF HOTFIX + SYNTAX REPAIRED</div>",
     unsafe_allow_html=True
 )
 
@@ -69,7 +69,6 @@ api_key = st.secrets.get("GROQ_API_KEY", "")
 with st.sidebar:
     st.header("⚙️ 终端控制台")
 
-    # 新增：手动选择 LLM 模型
     st.markdown("### 🧠 核心推理引擎")
     selected_model = st.selectbox(
         "选择大模型",
@@ -78,7 +77,6 @@ with st.sidebar:
         help="手动指定底层计算模型，精准控制分析逻辑"
     )
 
-    # 新增：手动干预技术参数
     st.markdown("### 🎛️ 策略参数微调")
     with st.expander("自定义均线周期 (手动输入)", expanded=False):
         ema_short = st.number_input("短期 EMA", min_value=5, max_value=50, value=20, step=1)
