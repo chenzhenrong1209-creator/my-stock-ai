@@ -19,7 +19,7 @@ import warnings
 
 warnings.filterwarnings('ignore')
 
-# =================页面与终端 UI 配置=================
+# ================= 页面与终端 UI 配置 =================
 st.set_page_config(
     page_title="AI 智能投研终端 Pro Max",
     page_icon="🏦",
@@ -56,16 +56,17 @@ st.markdown("""
 
 st.title("🏦 AI 智能量化投研终端")
 st.markdown(
-    f"<div class='terminal-header'>TERMINAL BUILD v6.4.2 | SYS_TIME: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | MULTI-TF HOTFIX + SYNTAX REPAIRED</div>",
+    f"<div class='terminal-header'>TERMINAL BUILD v6.4.0 | SYS_TIME: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | MULTI-TF HOTFIX + MANUAL OVERRIDE</div>",
     unsafe_allow_html=True
 )
 
 api_key = st.secrets.get("GROQ_API_KEY", "")
 
-# =================侧边栏与参数调优=================
+# ================= 侧边栏与参数调优 =================
 with st.sidebar:
     st.header("⚙️ 终端控制台")
 
+    # 新增：手动选择 LLM 模型
     st.markdown("### 🧠 核心推理引擎")
     selected_model = st.selectbox(
         "选择大模型",
@@ -74,6 +75,7 @@ with st.sidebar:
         help="手动指定底层计算模型，精准控制分析逻辑"
     )
 
+    # 新增：手动干预技术参数
     st.markdown("### 🎛️ 策略参数微调")
     with st.expander("自定义均线周期 (手动输入)", expanded=False):
         ema_short = st.number_input("短期 EMA", min_value=5, max_value=50, value=20, step=1)
@@ -90,12 +92,12 @@ with st.sidebar:
     st.success("板块扫描 : ACTIVE (带熔断保护)")
     st.success("技术结构引擎 : ACTIVE")
     st.success("多周期分析 : ACTIVE (15m / 60m / 120m)")
-    st.success("智瞰龙虎榜 : ACTIVE (具备实时现价锚定)")
+    st.success("智瞰龙虎榜 : ACTIVE")
 
 if ts_token:
     ts.set_token(ts_token)
 
-# =================网络底座=================
+# ================= 网络底座 =================
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
@@ -139,7 +141,7 @@ def fetch_json(url, timeout=5, extra_headers=None):
             st.error(f"Feed Error: {e}")
         return None
 
-# =================价格归一化修复=================
+# ================= 价格归一化修复 =================
 def normalize_em_price(raw_price, prev_close=None):
     raw_price = safe_float(raw_price)
     prev_close = safe_float(prev_close)
@@ -160,7 +162,7 @@ def normalize_em_price(raw_price, prev_close=None):
         return raw_price / 10
     return raw_price
 
-# =================技术面核心函数=================
+# ================= 技术面核心函数 =================
 def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     df["ema_short"] = df["close"].ewm(span=ema_short, adjust=False).mean()
@@ -471,7 +473,7 @@ def build_price_figure(df: pd.DataFrame):
     )
     return fig
 
-# =================多周期数据与分析=================
+# ================= 多周期数据与分析 =================
 def normalize_min_df(df: pd.DataFrame):
     if df is None or df.empty:
         return None
@@ -638,7 +640,7 @@ def get_multi_timeframe_analysis(symbol: str):
         "final_view": final_view
     }
 
-# =================核心数据流=================
+# ================= 核心数据流 =================
 @st.cache_data(ttl=60)
 def get_global_news():
     url = "https://zhibo.sina.com.cn/api/zhibo/feed?page=1&page_size=60&zhibo_id=152&tag_id=0&dire=f&dpc=1"
@@ -822,7 +824,7 @@ def get_kline(symbol, days=220):
             st.warning(f"Tushare 兜底失败: {e}")
     return None
 
-# =================AI 计算核心=================
+# ================= AI 计算核心 =================
 def call_ai(prompt, model=None, temperature=0.3):
     try:
         exec_model = model if model else selected_model
@@ -836,7 +838,8 @@ def call_ai(prompt, model=None, temperature=0.3):
     except Exception as e:
         return f"❌ AI 计算节点故障: {e}"
 
-# =================智瞰龙虎榜数据与分析模块 (增强现价锚定)=================
+
+# ================= 智瞰龙虎榜数据与分析模块 =================
 class LonghubangDataFetcher:
     """龙虎榜数据获取类"""
     def __init__(self, api_key=None):
@@ -902,29 +905,15 @@ class LonghubangDataFetcher:
             'total_sell_amount': df['卖出金额'].sum() if '卖出金额' in df.columns else 0,
             'total_net_inflow': df['净流入金额'].sum() if '净流入金额' in df.columns else 0,
         }
-        
         if '游资名称' in df.columns and '净流入金额' in df.columns:
             top_youzi = df.groupby('游资名称')['净流入金额'].sum().sort_values(ascending=False)
             summary['top_youzi'] = top_youzi.head(10).to_dict()
-            
         if '股票代码' in df.columns and '净流入金额' in df.columns:
             top_stocks = df.groupby(['股票代码', '股票名称'])['净流入金额'].sum().sort_values(ascending=False)
-            top_stocks_list = []
-            
-            # 关键优化：为排名前列的股票自动获取真实行情现价，防止AI瞎编价格
-            for (code, name), amount in top_stocks.head(20).items():
-                quote = get_stock_quote(code)
-                current_price = quote['price'] if quote else "未知"
-                pct = quote['pct'] if quote else "未知"
-                top_stocks_list.append({
-                    'code': code, 
-                    'name': name, 
-                    'net_inflow': amount,
-                    'current_price': current_price,
-                    'pct': pct
-                })
-            summary['top_stocks'] = top_stocks_list
-            
+            summary['top_stocks'] = [
+                {'code': code, 'name': name, 'net_inflow': amount}
+                for (code, name), amount in top_stocks.head(20).items()
+            ]
         if '概念' in df.columns:
             all_concepts = []
             for concepts in df['概念'].dropna():
@@ -954,18 +943,14 @@ class LonghubangDataFetcher:
             text_parts.append("\n【活跃游资 TOP10】")
             for idx, (name, amount) in enumerate(summary['top_youzi'].items(), 1):
                 text_parts.append(f"{idx}. {name}: {amount:,.2f} 元")
-                
         if summary.get('top_stocks'):
-            text_parts.append("\n【资金净流入 TOP20股票及实时盘口】(请严格以此现价作为推演基准)")
+            text_parts.append("\n【资金净流入 TOP20股票】")
             for idx, stock in enumerate(summary['top_stocks'], 1):
-                price_info = f"现价:{stock.get('current_price', '未知')}元 (涨跌幅:{stock.get('pct', '未知')}%)"
-                text_parts.append(f"{idx}. {stock['name']}({stock['code']}): 净流入 {stock['net_inflow']:,.2f} 元 | {price_info}")
-                
+                text_parts.append(f"{idx}. {stock['name']}({stock['code']}): {stock['net_inflow']:,.2f} 元")
         if summary.get('hot_concepts'):
             text_parts.append("\n【热门概念 TOP20】")
             for idx, (concept, count) in enumerate(list(summary['hot_concepts'].items())[:20], 1):
                 text_parts.append(f"{idx}. {concept}: {count} 次")
-                
         text_parts.append("\n【详细交易记录 TOP50】")
         for idx, row in df.head(50).iterrows():
             text_parts.append(
@@ -981,7 +966,7 @@ class LonghubangDataFetcher:
 class LonghubangAgents:
     """龙虎榜AI分析师集合 (整合主干引擎)"""
     def __init__(self):
-        pass 
+        pass # 已复用主程序 call_ai 接口，无需初始化 DeepSeek 客户端
 
     def youzi_behavior_analyst(self, longhubang_data: str, summary: Dict) -> Dict[str, Any]:
         youzi_info = ""
@@ -992,6 +977,7 @@ class LonghubangAgents:
 
         prompt = f"""
 你是一名资深的游资研究专家，擅长从龙虎榜数据中洞察游资意图和操作手法。拥有10年以上的龙虎榜数据分析经验，深谙各路游资的操作风格和盈利模式。
+
 【龙虎榜数据概况】
 记录总数: {summary.get('total_records', 0)}
 涉及股票: {summary.get('total_stocks', 0)} 只
@@ -999,44 +985,48 @@ class LonghubangAgents:
 总买入金额: {summary.get('total_buy_amount', 0):,.2f} 元
 总卖出金额: {summary.get('total_sell_amount', 0):,.2f} 元
 净流入金额: {summary.get('total_net_inflow', 0):,.2f} 元
+
 {youzi_info}
+
 {longhubang_data[:8000]}
+
 请基于以上龙虎榜数据，进行深入的游资行为分析：
-活跃游资识别与画像 ⭐ 核心
-识别当前最活跃的5-8个游资席位
-分析每个游资的操作风格（激进型/稳健型/超短型/波段型）
-评估游资的胜率和成功案例
-识别知名"牛散"和"游资大佬"
-游资操作特征分析
-分析游资的买入特征（追高/低吸/打板/潜伏）
-分析游资的卖出特征（一日游/持有周期/止盈止损）
-识别游资的联合操作和接力特征
-判断游资是否存在抱团现象
-游资目标股票分析
-分析游资重点关注的股票（前10只）
-识别游资集体看好的股票（多席位介入）
-分析游资选股的共性特征（题材/概念/技术形态）
-评估游资介入股票的后续爆发力
-游资进出节奏
-判断游资整体是进攻还是防守状态
-分析游资对热点的跟随速度
-识别游资撤退的信号和板块
-评估游资的持续作战能力
-游资与题材的匹配
-分析游资偏好的题材和概念
-识别游资正在炒作的热点
-判断题材的炒作周期位置
-预判下一个游资可能关注的题材
-风险与机会提示
-识别游资可能设置的"陷阱"股票
-提示游资一致性过高的风险（容易崩盘）
-发现游资刚开始介入的潜力股
-评估跟随游资的风险收益比
-投资策略建议
-推荐3-5只游资看好的潜力股票
-提示2-3只游资可能出货的风险股票
-给出跟随游资的操作建议
-提供仓位和止损建议
+1. **活跃游资识别与画像** ⭐ 核心
+   - 识别当前最活跃的5-8个游资席位
+   - 分析每个游资的操作风格（激进型/稳健型/超短型/波段型）
+   - 评估游资的胜率和成功案例
+   - 识别知名"牛散"和"游资大佬"
+2. **游资操作特征分析**
+   - 分析游资的买入特征（追高/低吸/打板/潜伏）
+   - 分析游资的卖出特征（一日游/持有周期/止盈止损）
+   - 识别游资的联合操作和接力特征
+   - 判断游资是否存在抱团现象
+3. **游资目标股票分析**
+   - 分析游资重点关注的股票（前10只）
+   - 识别游资集体看好的股票（多席位介入）
+   - 分析游资选股的共性特征（题材/概念/技术形态）
+   - 评估游资介入股票的后续爆发力
+4. **游资进出节奏**
+   - 判断游资整体是进攻还是防守状态
+   - 分析游资对热点的跟随速度
+   - 识别游资撤退的信号和板块
+   - 评估游资的持续作战能力
+5. **游资与题材的匹配**
+   - 分析游资偏好的题材和概念
+   - 识别游资正在炒作的热点
+   - 判断题材的炒作周期位置
+   - 预判下一个游资可能关注的题材
+6. **风险与机会提示**
+   - 识别游资可能设置的"陷阱"股票
+   - 提示游资一致性过高的风险（容易崩盘）
+   - 发现游资刚开始介入的潜力股
+   - 评估跟随游资的风险收益比
+7. **投资策略建议**
+   - 推荐3-5只游资看好的潜力股票
+   - 提示2-3只游资可能出货的风险股票
+   - 给出跟随游资的操作建议
+   - 提供仓位和止损建议
+
 请给出专业、实战性强的游资行为分析报告。
 """
         analysis = call_ai(prompt)
@@ -1050,63 +1040,64 @@ class LonghubangAgents:
     def stock_potential_analyst(self, longhubang_data: str, summary: Dict) -> Dict[str, Any]:
         stock_info = ""
         if summary.get('top_stocks'):
-            stock_info = "\n【热门股票实时统计】\n"
+            stock_info = "\n【热门股票统计】\n"
             for idx, stock in enumerate(summary['top_stocks'][:20], 1):
-                stock_info += f"{idx}. {stock['name']}({stock['code']}): 净流入 {stock['net_inflow']:,.2f} 元 | 现价 {stock.get('current_price', '未知')}元\n"
+                stock_info += f"{idx}. {stock['name']}({stock['code']}): 净流入 {stock['net_inflow']:,.2f} 元\n"
 
         prompt = f"""
 你是一名资深的个股研究专家和短线交易高手，精通技术分析和资金分析，擅长从龙虎榜中挖掘短期爆发股。
+
 【龙虎榜数据概况】
 记录总数: {summary.get('total_records', 0)}
 涉及股票: {summary.get('total_stocks', 0)} 只
 涉及游资: {summary.get('total_youzi', 0)} 个
+
 {stock_info}
+
 {longhubang_data[:8000]}
 
-⚠️ 【极其重要的指令】：
-当你给出任何股票的具体买入价位、目标价或止损价时，**必须严格参考上述概况中提供的【现价】进行合理的上下浮动推演。绝对禁止凭空捏造、幻觉生成或脱离实际现价的乱报价！**
-
 请基于以上龙虎榜数据，进行深入的个股潜力分析：
-次日大概率上涨股票挖掘 ⭐⭐⭐ 最核心
-识别5-8只次日大概率上涨的股票
-详细分析每只股票的上涨逻辑（资金面、技术面、题材面）
-评估每只股票的上涨空间和确定性（高/中/低）
-给出具体的买入价位和止损位（**必须严格基于提供的现价进行测算**）
-资金流向强度分析
-识别主力资金大幅流入的股票（净买入前10）
-分析资金流入的集中度和持续性
-识别多席位联合买入的股票（强烈看好信号）
-判断资金流入是真实买入还是诱多
-技术形态评估
-分析上榜股票的技术位置（突破/回调/整理）
-识别处于启动阶段的股票
-评估股票的技术支撑和阻力
-判断股票的短期走势方向
-题材与概念分析
-识别当前最热门的题材和概念
-分析题材的持续性和爆发力
-找出题材龙头和低位补涨股
-预判题材的炒作周期
-游资持仓分析
-识别游资重仓持有的股票
-分析游资的一致性程度
-判断游资是建仓、加仓还是出货
-评估游资持仓的稳定性
-上榜类型分析
-分析日榜和三日榜的差异
-识别连续上榜的股票（关注度高）
-判断上榜的性质（放量突破/涨停板/异常波动）
-评估不同上榜类型的后续表现概率
-风险股票识别
-识别3-5只高风险股票（游资可能出货）
-分析卖出金额大于买入金额的股票
-提示游资一日游后撤离的股票
-警示技术面走坏的股票
-操作策略建议
-推荐5-8只次日重点关注的股票（按优先级排序）
-给出每只股票的买入逻辑、买入价位、目标价位、止损价位（**切记参考我提供给你的最新现价锚点！**）
-提供仓位分配建议
-给出持有周期建议（超短/短线/波段）
+1. **次日大概率上涨股票挖掘** ⭐⭐⭐ 最核心
+   - 识别5-8只次日大概率上涨的股票
+   - 详细分析每只股票的上涨逻辑（资金面、技术面、题材面）
+   - 评估每只股票的上涨空间和确定性（高/中/低）
+   - 给出具体的买入价位和止损位
+2. **资金流向强度分析**
+   - 识别主力资金大幅流入的股票（净买入前10）
+   - 分析资金流入的集中度和持续性
+   - 识别多席位联合买入的股票（强烈看好信号）
+   - 判断资金流入是真实买入还是诱多
+3. **技术形态评估**
+   - 分析上榜股票的技术位置（突破/回调/整理）
+   - 识别处于启动阶段的股票
+   - 评估股票的技术支撑和阻力
+   - 判断股票的短期走势方向
+4. **题材与概念分析**
+   - 识别当前最热门的题材和概念
+   - 分析题材的持续性和爆发力
+   - 找出题材龙头和低位补涨股
+   - 预判题材的炒作周期
+5. **游资持仓分析**
+   - 识别游资重仓持有的股票
+   - 分析游资的一致性程度
+   - 判断游资是建仓、加仓还是出货
+   - 评估游资持仓的稳定性
+6. **上榜类型分析**
+   - 分析日榜和三日榜的差异
+   - 识别连续上榜的股票（关注度高）
+   - 判断上榜的性质（放量突破/涨停板/异常波动）
+   - 评估不同上榜类型的后续表现概率
+7. **风险股票识别**
+   - 识别3-5只高风险股票（游资可能出货）
+   - 分析卖出金额大于买入金额的股票
+   - 提示游资一日游后撤离的股票
+   - 警示技术面走坏的股票
+8. **操作策略建议**
+   - 推荐5-8只次日重点关注的股票（按优先级排序）
+   - 给出每只股票的买入逻辑、买入价位、目标价位、止损价位
+   - 提供仓位分配建议
+   - 给出持有周期建议（超短/短线/波段）
+
 务必重点分析次日大概率上涨的股票！
 """
         analysis = call_ai(prompt)
@@ -1126,52 +1117,56 @@ class LonghubangAgents:
 
         prompt = f"""
 你是一名资深的题材研究专家，拥有敏锐的市场嗅觉，擅长从龙虎榜数据中捕捉题材热点和板块轮动机会。
+
 【龙虎榜数据概况】
 记录总数: {summary.get('total_records', 0)}
 涉及股票: {summary.get('total_stocks', 0)} 只
+
 {concept_info}
+
 {longhubang_data[:8000]}
+
 请基于以上龙虎榜数据，进行深入的题材追踪分析：
-热点题材识别 ⭐ 核心
-识别当前最热门的5-8个题材/概念
-分析每个题材的核心逻辑和催化剂
-评估题材的市场关注度和参与度
-判断题材是主流还是伪题材
-题材炒作周期分析
-判断每个题材所处的炒作周期（萌芽期/爆发期/高潮期/退潮期）
-分析题材的爆发力和持续性
-识别即将启动的新题材（萌芽期）
-提示即将退潮的老题材（高潮期）
-题材龙头与梯队
-识别每个题材的龙头股（1-2只）
-找出题材的跟风股和补涨股
-分析龙头的地位是否稳固
-判断是否存在龙头切换
-游资对题材的态度
-分析游资重点炒作的题材
-判断游资对题材的认同度（一致/分歧）
-识别游资集体进攻的题材（强势题材）
-发现游资开始撤离的题材（弱势题材）
-题材轮动特征
-分析题材之间的轮动关系
-识别强势题材和弱势题材
-判断资金从哪个题材流向哪个题材
-预判下一个可能启动的题材
-题材与市场环境匹配度
-分析题材是否符合当前市场风格
-评估题材的政策支持度
-判断题材的基本面支撑
-识别纯粹炒作的题材
-题材风险评估
-识别过度炒作的题材（泡沫风险）
-提示游资分歧加大的题材
-警示题材逻辑破裂的风险
-评估题材的回调风险
-投资策略建议
-推荐3-5个值得关注的强势题材
-每个题材推荐1-2只最优标的
-提供题材投资的时机选择
-给出题材仓位和持有周期建议
+1. **热点题材识别** ⭐ 核心
+   - 识别当前最热门的5-8个题材/概念
+   - 分析每个题材的核心逻辑和催化剂
+   - 评估题材的市场关注度和参与度
+   - 判断题材是主流还是伪题材
+2. **题材炒作周期分析**
+   - 判断每个题材所处的炒作周期（萌芽期/爆发期/高潮期/退潮期）
+   - 分析题材的爆发力和持续性
+   - 识别即将启动的新题材（萌芽期）
+   - 提示即将退潮的老题材（高潮期）
+3. **题材龙头与梯队**
+   - 识别每个题材的龙头股（1-2只）
+   - 找出题材的跟风股和补涨股
+   - 分析龙头的地位是否稳固
+   - 判断是否存在龙头切换
+4. **游资对题材的态度**
+   - 分析游资重点炒作的题材
+   - 判断游资对题材的认同度（一致/分歧）
+   - 识别游资集体进攻的题材（强势题材）
+   - 发现游资开始撤离的题材（弱势题材）
+5. **题材轮动特征**
+   - 分析题材之间的轮动关系
+   - 识别强势题材和弱势题材
+   - 判断资金从哪个题材流向哪个题材
+   - 预判下一个可能启动的题材
+6. **题材与市场环境匹配度**
+   - 分析题材是否符合当前市场风格
+   - 评估题材的政策支持度
+   - 判断题材的基本面支撑
+   - 识别纯粹炒作的题材
+7. **题材风险评估**
+   - 识别过度炒作的题材（泡沫风险）
+   - 提示游资分歧加大的题材
+   - 警示题材逻辑破裂的风险
+   - 评估题材的回调风险
+8. **投资策略建议**
+   - 推荐3-5个值得关注的强势题材
+   - 每个题材推荐1-2只最优标的
+   - 提供题材投资的时机选择
+   - 给出题材仓位和持有周期建议
 """
         analysis = call_ai(prompt)
         return {
@@ -1184,6 +1179,7 @@ class LonghubangAgents:
     def risk_control_specialist(self, longhubang_data: str, summary: Dict) -> Dict[str, Any]:
         prompt = f"""
 你是一名资深的风险控制专家和反向思维大师，拥有20年的市场风险管理经验，擅长识别龙虎榜中的风险信号和资金陷阱。
+
 【龙虎榜数据概况】
 记录总数: {summary.get('total_records', 0)}
 涉及股票: {summary.get('total_stocks', 0)} 只
@@ -1191,48 +1187,50 @@ class LonghubangAgents:
 总买入金额: {summary.get('total_buy_amount', 0):,.2f} 元
 总卖出金额: {summary.get('total_sell_amount', 0):,.2f} 元
 净流入金额: {summary.get('total_net_inflow', 0):,.2f} 元
+
 {longhubang_data[:8000]}
+
 请基于以上龙虎榜数据，进行全面的风险分析：
-高风险股票识别 ⭐ 核心
-识别5-8只高风险股票（次日大概率下跌）
-分析每只股票的风险点（游资出货/技术破位/题材退潮）
-评估每只股票的风险等级（高/中/低）
-给出规避建议和止损位
-游资出货信号识别
-识别卖出金额远大于买入金额的股票
-分析游资"一日游"后撤离的股票
-识别游资集体出货的股票（多席位卖出）
-判断游资出货是正常获利了结还是预期恶化
-资金陷阱识别
-识别"虚假放量"的股票（实为对倒出货）
-分析"高位放量滞涨"的股票
-识别"拉高出货"的经典手法
-提示"击鼓传花"的末期信号
-题材风险评估
-识别过度炒作的题材（泡沫严重）
-分析题材逻辑破裂的风险
-提示题材退潮的信号
-评估题材的持续性风险
-技术面风险提示
-识别技术面走坏的股票（破位/跌破支撑）
-分析高位震荡的股票（出货迹象）
-提示连续上涨后的回调风险
-评估短期超买的股票
-情绪风险评估
-识别市场情绪过热的信号
-分析游资一致性过高的风险（易崩盘）
-提示跟风盘过多的股票（接盘侠风险）
-评估短期投机氛围的风险
-系统性风险提示
-分析整体龙虎榜数据反映的市场风险
-评估游资整体是进攻还是防守
-判断市场风险偏好的变化
-提示可能的系统性调整风险
-风险管理建议
-提供仓位控制建议（重仓/轻仓/空仓）
-给出止损止盈的纪律要求
-建议规避的板块和题材
-提供风险对冲策略
+1. **高风险股票识别** ⭐ 核心
+   - 识别5-8只高风险股票（次日大概率下跌）
+   - 分析每只股票的风险点（游资出货/技术破位/题材退潮）
+   - 评估每只股票的风险等级（高/中/低）
+   - 给出规避建议和止损位
+2. **游资出货信号识别**
+   - 识别卖出金额远大于买入金额的股票
+   - 分析游资"一日游"后撤离的股票
+   - 识别游资集体出货的股票（多席位卖出）
+   - 判断游资出货是正常获利了结还是预期恶化
+3. **资金陷阱识别**
+   - 识别"虚假放量"的股票（实为对倒出货）
+   - 分析"高位放量滞涨"的股票
+   - 识别"拉高出货"的经典手法
+   - 提示"击鼓传花"的末期信号
+4. **题材风险评估**
+   - 识别过度炒作的题材（泡沫严重）
+   - 分析题材逻辑破裂的风险
+   - 提示题材退潮的信号
+   - 评估题材的持续性风险
+5. **技术面风险提示**
+   - 识别技术面走坏的股票（破位/跌破支撑）
+   - 分析高位震荡的股票（出货迹象）
+   - 提示连续上涨后的回调风险
+   - 评估短期超买的股票
+6. **情绪风险评估**
+   - 识别市场情绪过热的信号
+   - 分析游资一致性过高的风险（易崩盘）
+   - 提示跟风盘过多的股票（接盘侠风险）
+   - 评估短期投机氛围的风险
+7. **系统性风险提示**
+   - 分析整体龙虎榜数据反映的市场风险
+   - 评估游资整体是进攻还是防守
+   - 判断市场风险偏好的变化
+   - 提示可能的系统性调整风险
+8. **风险管理建议**
+   - 提供仓位控制建议（重仓/轻仓/空仓）
+   - 给出止损止盈的纪律要求
+   - 建议规避的板块和题材
+   - 提供风险对冲策略
 """
         analysis = call_ai(prompt)
         return {
@@ -1250,41 +1248,39 @@ class LonghubangAgents:
             analyses_text += f"职责: {analysis['agent_role']}\n"
             analyses_text += f"{'='*60}\n"
             analyses_text += analysis['analysis'] + "\n"
-            
+
         prompt = f"""
 你是一名资深的首席投资策略师，拥有CFA、FRM等专业资格，具有25年的市场实战经验和卓越的综合分析能力。
 你的团队包含4位专业分析师，他们已经从不同维度完成了龙虎榜数据分析：
 以下是各位分析师的详细分析报告：
+
 {analyses_text[:15000]}
 
-⚠️ 【系统最高级警告】：
-在你的最终报告中，当你整合并给出具体个股的操作建议时（特别是买入价位区间、目标价位、止损价位），**你必须严格参考前序数据中包含的【现价】指标进行计算！不允许出现任何与真实市场脱节的幻觉价格数据（如把现价50元的票说成建议20元买入）。如果报告中缺乏某股票的现价，请用百分比（如现价回调3%买入）来表述。**
-
 请作为首席策略师，综合以上所有分析，给出最终的投资策略报告：
-市场总体研判
-综合评估当前龙虎榜反映的市场状态
-判断游资整体的进攻或防守态度
-评估短期市场的机会和风险
-给出市场情绪和热度评分（0-100分）
-次日重点推荐股票（TOP5-8） ⭐⭐⭐ 最核心
-综合4位分析师的意见，筛选出5-8只次日最有潜力的股票
-每只股票必须包含：股票名称和代码、推荐理由、确定性评级、买入价位区间、目标价位、止损价位（严格基于已知真实价格制定）、持有周期建议
-按推荐优先级排序
-高风险警示股票（TOP3-5）
-综合识别3-5只高风险股票
-说明风险原因并给出规避建议
-热点题材总结
-总结当前2-3个最强势题材
-每个题材推荐1-2只最优标的
-操作策略建议
-仓位管理建议（进攻/平衡/防守）
-选股思路和方向
-买卖时机选择
-风险控制要求
-注意事项
-提示关键风险点
-强调纪律执行
-给出应对预案
+1. **市场总体研判**
+   - 综合评估当前龙虎榜反映的市场状态
+   - 判断游资整体的进攻或防守态度
+   - 评估短期市场的机会和风险
+   - 给出市场情绪和热度评分（0-100分）
+2. **次日重点推荐股票（TOP5-8）** ⭐⭐⭐ 最核心
+   - 综合4位分析师的意见，筛选出5-8只次日最有潜力的股票
+   - 每只股票必须包含：股票名称和代码、推荐理由、确定性评级、买入价位区间、目标价位、止损价位、持有周期建议
+   - 按推荐优先级排序
+3. **高风险警示股票（TOP3-5）**
+   - 综合识别3-5只高风险股票
+   - 说明风险原因并给出规避建议
+4. **热点题材总结**
+   - 总结当前2-3个最强势题材
+   - 每个题材推荐1-2只最优标的
+5. **操作策略建议**
+   - 仓位管理建议（进攻/平衡/防守）
+   - 选股思路和方向
+   - 买卖时机选择
+   - 风险控制要求
+6. **注意事项**
+   - 提示关键风险点
+   - 强调纪律执行
+   - 给出应对预案
 """
         analysis = call_ai(prompt)
         return {
@@ -1294,7 +1290,8 @@ class LonghubangAgents:
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
         }
 
-# =================终端全局看板=================
+
+# ================= 终端全局看板 =================
 st.markdown("### 🌍 宏观市场实时看板")
 pulse_data = get_market_pulse()
 if pulse_data:
@@ -1310,7 +1307,8 @@ else:
     st.warning("宏观看板数据流建立失败。")
 st.markdown("<br>", unsafe_allow_html=True)
 
-# =================终端功能选项卡=================
+# ================= 终端功能选项卡 =================
+# 新增 tab5 龙虎榜模块
 tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "🎯 I. 个股标的解析",
     "📈 II. 宏观大盘推演",
@@ -1319,7 +1317,7 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "🐉 V. 智瞰龙虎榜解析"
 ])
 
-# =================Tab 1: 个股解析=================
+# ================= Tab 1: 个股解析 =================
 with tab1:
     with st.container(border=True):
         st.markdown("#### 🔎 个股雷达锁定（多维买卖点测算版）")
@@ -1347,79 +1345,80 @@ with tab1:
                     c2.metric("总市值(亿)", f"{quote['market_cap']:.1f}")
                     c3.metric("动态 PE", f"{quote['pe']}")
                     c4.metric("换手率", f"{quote['turnover']:.2f}%")
-                if df_kline is None or len(df_kline) < 15:
-                    st.warning("获取到的有效 K 线极少，仅能通过最新行情进行轻量化推演。")
-                    with st.spinner("🧠 首席策略官撰写资产评估报告..."):
-                        prompt = f"""
+
+                    if df_kline is None or len(df_kline) < 15:
+                        st.warning("获取到的有效 K 线极少，仅能通过最新行情进行轻量化推演。")
+                        with st.spinner("🧠 首席策略官撰写资产评估报告..."):
+                            prompt = f"""
 作为顶级私募经理，请基于股票 {name}({symbol_input}) 当前状态：
 现价 {price}，涨跌幅 {pct}%，市值 {quote['market_cap']} 亿，动态 PE {quote['pe']}，换手率 {quote['turnover']}%。
 【请重点进行以下维度的分析】：
-🏦 基本面诊断与资金意图盲猜
-⚔️ 布局进入与离场推演：
-【短期波段】进入点与离场点建议
-【中长期配置】建仓点位与长线离场目标
-结论定调：[看多 / 观察 / 谨慎 / 偏空]
+1. 🏦 基本面诊断与资金意图盲猜
+2. ⚔️ 布局进入与离场推演：
+   - 【短期波段】进入点与离场点建议
+   - 【中长期配置】建仓点位与长线离场目标
+3. 结论定调：[看多 / 观察 / 谨慎 / 偏空]
 """
-                        st.markdown(call_ai(prompt))
-                else:
-                    df_kline = add_indicators(df_kline)
-                    tech = summarize_technicals(df_kline)
-                    smc = tech["smc"]
-                    fig = build_price_figure(df_kline)
-                    st.plotly_chart(fig, use_container_width=True)
+                            st.markdown(call_ai(prompt))
+                    else:
+                        df_kline = add_indicators(df_kline)
+                        tech = summarize_technicals(df_kline)
+                        smc = tech["smc"]
+                        fig = build_price_figure(df_kline)
+                        st.plotly_chart(fig, use_container_width=True)
 
-                    st.markdown("##### 🔬 核心技术指标与阻力测算")
-                    t1, t2, t3, t4 = st.columns(4)
-                    t1.metric("趋势", tech["trend"])
-                    t2.metric("RSI14", f"{tech['rsi14']:.2f}" if pd.notna(tech["rsi14"]) else "N/A")
-                    t3.metric("ATR14", f"{tech['atr14']:.2f}" if pd.notna(tech["atr14"]) else "N/A")
-                    t4.metric("MACD 状态", tech["macd_state"])
-                    t5, t6, t7, t8 = st.columns(4)
-                    t5.metric("布林状态", tech["bb_state"])
-                    t6.metric("量能状态", tech["vol_state"])
-                    t7.metric("BOS", tech["bos_state"])
-                    t8.metric("流动性扫盘", tech["sweep_state"])
+                        st.markdown("##### 🔬 核心技术指标与阻力测算")
+                        t1, t2, t3, t4 = st.columns(4)
+                        t1.metric("趋势", tech["trend"])
+                        t2.metric("RSI14", f"{tech['rsi14']:.2f}" if pd.notna(tech["rsi14"]) else "N/A")
+                        t3.metric("ATR14", f"{tech['atr14']:.2f}" if pd.notna(tech["atr14"]) else "N/A")
+                        t4.metric("MACD 状态", tech["macd_state"])
+                        t5, t6, t7, t8 = st.columns(4)
+                        t5.metric("布林状态", tech["bb_state"])
+                        t6.metric("量能状态", tech["vol_state"])
+                        t7.metric("BOS", tech["bos_state"])
+                        t8.metric("流动性扫盘", tech["sweep_state"])
 
-                    st.markdown("##### 🧩 FVG / ICT / SMC 结构信息")
-                    f1, f2 = st.columns(2)
-                    with f1:
-                        bull_fvg = tech["nearest_bull_fvg"]
-                        if bull_fvg:
-                            st.success(f"最近多头 FVG：{bull_fvg['date']} | 区间 {bull_fvg['bottom']:.2f} - {bull_fvg['top']:.2f}")
-                        else:
-                            st.info("最近未检测到明显多头 FVG")
-                        if smc["latest_bull_ob"]:
-                            st.success(f"最近多头 OB：{smc['latest_bull_ob']['date']} | 区间 {smc['latest_bull_ob']['bottom']:.2f} - {smc['latest_bull_ob']['top']:.2f}")
-                        else:
-                            st.info("最近未检测到明显多头 OB")
-                    with f2:
-                        bear_fvg = tech["nearest_bear_fvg"]
-                        if bear_fvg:
-                            st.error(f"最近空头 FVG：{bear_fvg['date']} | 区间 {bear_fvg['bottom']:.2f} - {bear_fvg['top']:.2f}")
-                        else:
-                            st.info("最近未检测到明显空头 FVG")
-                        if smc["latest_bear_ob"]:
-                            st.error(f"最近空头 OB：{smc['latest_bear_ob']['date']} | 区间 {smc['latest_bear_ob']['bottom']:.2f} - {smc['latest_bear_ob']['top']:.2f}")
-                        else:
-                            st.info("最近未检测到明显空头 OB")
+                        st.markdown("##### 🧩 FVG / ICT / SMC 结构信息")
+                        f1, f2 = st.columns(2)
+                        with f1:
+                            bull_fvg = tech["nearest_bull_fvg"]
+                            if bull_fvg:
+                                st.success(f"最近多头 FVG：{bull_fvg['date']} | 区间 {bull_fvg['bottom']:.2f} - {bull_fvg['top']:.2f}")
+                            else:
+                                st.info("最近未检测到明显多头 FVG")
+                            if smc["latest_bull_ob"]:
+                                st.success(f"最近多头 OB：{smc['latest_bull_ob']['date']} | 区间 {smc['latest_bull_ob']['bottom']:.2f} - {smc['latest_bull_ob']['top']:.2f}")
+                            else:
+                                st.info("最近未检测到明显多头 OB")
+                        with f2:
+                            bear_fvg = tech["nearest_bear_fvg"]
+                            if bear_fvg:
+                                st.error(f"最近空头 FVG：{bear_fvg['date']} | 区间 {bear_fvg['bottom']:.2f} - {bear_fvg['top']:.2f}")
+                            else:
+                                st.info("最近未检测到明显空头 FVG")
+                            if smc["latest_bear_ob"]:
+                                st.error(f"最近空头 OB：{smc['latest_bear_ob']['date']} | 区间 {smc['latest_bear_ob']['bottom']:.2f} - {smc['latest_bear_ob']['top']:.2f}")
+                            else:
+                                st.info("最近未检测到明显空头 OB")
 
-                    st.markdown("##### 🏗️ 市场结构补充")
-                    s1, s2, s3 = st.columns(3)
-                    eqh_count = len(smc["eqh"]) if smc["eqh"] else 0
-                    eql_count = len(smc["eql"]) if smc["eql"] else 0
-                    pd_zone = smc["pd_zone"]["zone"] if smc["pd_zone"] else "N/A"
-                    s1.metric("MSS", smc["mss"])
-                    s2.metric("EQH / EQL", f"{eqh_count} / {eql_count}")
-                    s3.metric("P/D Zone", pd_zone)
-                    latest_close = tech["latest_close"]
+                        st.markdown("##### 🏗️ 市场结构补充")
+                        s1, s2, s3 = st.columns(3)
+                        eqh_count = len(smc["eqh"]) if smc["eqh"] else 0
+                        eql_count = len(smc["eql"]) if smc["eql"] else 0
+                        pd_zone = smc["pd_zone"]["zone"] if smc["pd_zone"] else "N/A"
+                        s1.metric("MSS", smc["mss"])
+                        s2.metric("EQH / EQL", f"{eqh_count} / {eql_count}")
+                        s3.metric("P/D Zone", pd_zone)
+                        latest_close = tech["latest_close"]
 
-                    support_zone = min(tech["ema_short"], tech["ema_mid"])
-                    pressure_zone = max(tech["ema_short"], tech["ema_mid"])
-                    st.markdown("##### 🎯 动态支撑 / 压力")
-                    z1, z2, z3 = st.columns(3)
-                    z1.metric("最新收盘", f"{latest_close:.2f}")
-                    z2.metric("动态支撑参考", f"{support_zone:.2f}")
-                    z3.metric("动态压力参考", f"{pressure_zone:.2f}")
+                        support_zone = min(tech["ema_short"], tech["ema_mid"])
+                        pressure_zone = max(tech["ema_short"], tech["ema_mid"])
+                        st.markdown("##### 🎯 动态支撑 / 压力")
+                        z1, z2, z3 = st.columns(3)
+                        z1.metric("最新收盘", f"{latest_close:.2f}")
+                        z2.metric("动态支撑参考", f"{support_zone:.2f}")
+                        z3.metric("动态压力参考", f"{pressure_zone:.2f}")
 
                     st.markdown("##### ⏱️ 多周期技术分析")
                     m1, m2, m3 = st.columns(3)
@@ -1473,38 +1472,38 @@ with tab1:
 你现在是顶级私募基金的操盘手（精通基本面、量价资金博弈、多周期共振）。
 请对股票 {name}({symbol_input}) 做一份极具实战价值的【估值 + 资金流 + 支撑/压力 + 精准买卖点 + 多周期共振】综合研判。
 【基础与资金博弈数据】
-现价: {price} (日涨跌幅: {pct}%)
-总市值: {quote['market_cap']} 亿 | 动态 PE: {quote['pe']} | 市净率 PB: {quote['pb']}
-当日换手率: {quote['turnover']}%
-近期量能状态: {tech['vol_state']}
+- 现价: {price} (日涨跌幅: {pct}%)
+- 总市值: {quote['market_cap']} 亿 | 动态 PE: {quote['pe']} | 市净率 PB: {quote['pb']}
+- 当日换手率: {quote['turnover']}%
+- 近期量能状态: {tech['vol_state']}
 【核心日线技术与结构数据】
-趋势状态: {tech['trend']} | RSI14: {tech['rsi14']}
-最新收盘: {tech['latest_close']}
-短期生命线 (EMA{ema_short}): {tech['ema_short']}
-中长期基准 (EMA{ema_mid}/{ema_long}): {ema_mid_val} / {ema_long_val}
-结构特征: BOS({tech['bos_state']}), MSS({smc['mss']})
-异常流动性: 扫盘({tech['sweep_state']})
-核心磁区 (FVG/OB):
-近期多头 FVG: {tech['nearest_bull_fvg']}
-近期空头 FVG: {tech['nearest_bear_fvg']}
-近期多头 OB: {smc['latest_bull_ob']}
-近期空头 OB: {smc['latest_bear_ob']}
+- 趋势状态: {tech['trend']} | RSI14: {tech['rsi14']}
+- 最新收盘: {tech['latest_close']}
+- 短期生命线 (EMA{ema_short}): {tech['ema_short']}
+- 中长期基准 (EMA{ema_mid}/{ema_long}): {ema_mid_val} / {ema_long_val}
+- 结构特征: BOS({tech['bos_state']}), MSS({smc['mss']})
+- 异常流动性: 扫盘({tech['sweep_state']})
+- 核心磁区 (FVG/OB):
+  近期多头 FVG: {tech['nearest_bull_fvg']}
+  近期空头 FVG: {tech['nearest_bear_fvg']}
+  近期多头 OB: {smc['latest_bull_ob']}
+  近期空头 OB: {smc['latest_bear_ob']}
 【多周期分析】
-15分钟: {mtf['15m']}
-60分钟: {mtf['60m']}
-120分钟: {mtf['120m']}
-多周期综合结论: {mtf['final_view']}
+- 15分钟: {mtf['15m']}
+- 60分钟: {mtf['60m']}
+- 120分钟: {mtf['120m']}
+- 多周期综合结论: {mtf['final_view']}
 【请务必输出】
-🏦 基本面与估值定位
-🌊 资金面穿透
-🎯 支撑与压力测算
-⚔️ 布局进入与离场推演
-【短期波段】
-【中长期配置】
-⏱️ 多周期共振判断
-15分钟、60分钟、120分钟是否共振
-是适合追涨、低吸、等回踩，还是观望
-最后给出一句明确结论：强势看多 / 偏多观察 / 震荡等待 / 谨慎偏空
+1. 🏦 基本面与估值定位
+2. 🌊 资金面穿透
+3. 🎯 支撑与压力测算
+4. ⚔️ 布局进入与离场推演
+   - 【短期波段】
+   - 【中长期配置】
+5. ⏱️ 多周期共振判断
+   - 15分钟、60分钟、120分钟是否共振
+   - 是适合追涨、低吸、等回踩，还是观望
+6. 最后给出一句明确结论：强势看多 / 偏多观察 / 震荡等待 / 谨慎偏空
 要求：语言要专业、直接、机构化，不能空话，尽量像真正交易员盘前计划。
 """
                             st.markdown(call_ai(prompt))
@@ -1513,27 +1512,27 @@ with tab1:
 你现在是顶级私募基金操盘手。
 请基于股票 {name}({symbol_input}) 当前基础数据与多周期结论做综合研判。
 【基础数据】
-现价: {price}
-日涨跌幅: {pct}%
-市值: {quote['market_cap']} 亿
-动态 PE: {quote['pe']}
-市净率 PB: {quote['pb']}
-换手率: {quote['turnover']}%
+- 现价: {price}
+- 日涨跌幅: {pct}%
+- 市值: {quote['market_cap']} 亿
+- 动态 PE: {quote['pe']}
+- 市净率 PB: {quote['pb']}
+- 换手率: {quote['turnover']}%
 【多周期分析】
-15分钟: {mtf['15m']}
-60分钟: {mtf['60m']}
-120分钟: {mtf['120m']}
-多周期综合结论: {mtf['final_view']}
+- 15分钟: {mtf['15m']}
+- 60分钟: {mtf['60m']}
+- 120分钟: {mtf['120m']}
+- 多周期综合结论: {mtf['final_view']}
 请输出：
-当前股性判断
-多周期共振解读
-短线交易建议
-中线观察建议
-最后一行给明确结论：看多 / 观察 / 谨慎 / 偏空
+1. 当前股性判断
+2. 多周期共振解读
+3. 短线交易建议
+4. 中线观察建议
+5. 最后一行给明确结论：看多 / 观察 / 谨慎 / 偏空
 """
                             st.markdown(call_ai(prompt))
 
-# =================Tab 2: 宏观大盘推演=================
+# ================= Tab 2: 宏观大盘推演 =================
 with tab2:
     with st.container(border=True):
         st.markdown("#### 📊 全盘系统级推演")
@@ -1547,13 +1546,13 @@ with tab2:
 你现在是高盛首席宏观策略师。请基于当前 A 股与外汇的精准数据进行大局观推演：
 实时数据：{str(pulse_data)}
 请输出：
-市场全景定调（分化还是普涨）
-北向资金意愿推断（基于汇率）
-短期沙盘推演方向
+1. 市场全景定调（分化还是普涨）
+2. 北向资金意愿推断（基于汇率）
+3. 短期沙盘推演方向
 """
                     st.markdown(call_ai(prompt, temperature=0.4))
 
-# =================Tab 3: 热点资金板块=================
+# ================= Tab 3: 热点资金板块 =================
 with tab3:
     with st.container(border=True):
         st.markdown("#### 🔥 当日主力资金狂欢地 (附实战标的推荐)")
@@ -1573,20 +1572,20 @@ with tab3:
 作为顶级游资操盘手，请深度解读今日最强的 5 个板块及其领涨龙头：
 {blocks_str}
 请输出：
-【核心驱动】这些板块背后的底层逻辑或共振政策利好是什么？
-【行情定性】这是存量博弈的一日游情绪宣泄，还是具备中线发酵潜力的主线？
-🎯 【个股配置与实战推荐】：
-基于上述板块逻辑和领涨股票，为散户推荐 2-3 只可以进行重点配置或埋伏的股票。
-对于推荐的每一只股票，请务必写明：
-股票名称与行业归属
-核心配置理由
-建议的入场姿势
+1. 【核心驱动】这些板块背后的底层逻辑或共振政策利好是什么？
+2. 【行情定性】这是存量博弈的一日游情绪宣泄，还是具备中线发酵潜力的主线？
+3. 🎯 【个股配置与实战推荐】：
+   基于上述板块逻辑和领涨股票，为散户推荐 2-3 只可以进行重点配置或埋伏的股票。
+   对于推荐的每一只股票，请务必写明：
+   - 股票名称与行业归属
+   - 核心配置理由
+   - 建议的入场姿势
 """
                             st.markdown(call_ai(prompt, temperature=0.4))
                     else:
                         st.error("获取板块数据失败，所有接口均处于熔断保护期。")
 
-# =================Tab 4: 高阶情报终端=================
+# ================= Tab 4: 高阶情报终端 =================
 with tab4:
     st.markdown("#### 📡 机构级事件图谱与智能评级矩阵")
     st.write("追踪彭博、推特、美联储、特朗普等宏观变量。已深度适配移动端，引入极客量化风控模块。")
@@ -1610,13 +1609,13 @@ with tab4:
 ⚠️ 【排版严令：禁止使用 Markdown 表格】 ⚠️
 为了适配移动端设备的终端显示，你绝对不能使用表格！必须为每一个事件生成一个独立的情报卡片。
 输出格式必须如下：
-[评级 Emoji] [[信源/人物]] [真实事件标题]
-⏰ 时间截获 : [提取对应时间]
-📝 情报简述 : [说明发生了什么]
-🎯 受波及资产 : [指出利好/利空资产]
-🧠 沙盘推演 : [一句话指出实质影响]
-☢️ 风控预警 : [一个简短硬核预警]
-
+### [评级 Emoji] [[信源/人物]] [真实事件标题]
+* ⏰ **时间截获**: [提取对应时间]
+* 📝 **情报简述**: [说明发生了什么]
+* 🎯 **受波及资产**: [指出利好/利空资产]
+* 🧠 **沙盘推演**: [一句话指出实质影响]
+* ☢️ **风控预警**: [一个简短硬核预警]
+---
 评级标准：
 🔴 核心：直接引发巨震的突发、大选级人物强硬表态、黑天鹅事件
 🟡 重要：关键经济数据、行业重磅政策、流动性显著异动
@@ -1628,69 +1627,70 @@ with tab4:
                         st.markdown("---")
                         st.markdown(report)
 
-# =================Tab 5: 智瞰龙虎榜解析=================
+# ================= Tab 5: 智瞰龙虎榜解析 =================
 with tab5:
     with st.container(border=True):
         st.markdown("#### 🐉 智瞰龙虎榜 AI 分析集群")
         st.write("获取游资动态，挖掘次日爆发潜力股，识别高风险陷阱。")
-    col_date, col_btn = st.columns([1, 2])
-    with col_date:
-        lhb_date = st.date_input("选择龙虎榜日期", datetime.now() - timedelta(days=1))
-    with col_btn:
-        st.write("") # 占位用于垂直对齐
-        run_lhb_btn = st.button("🚀 启动智瞰龙虎分析集群", type="primary", use_container_width=True)
 
-    if run_lhb_btn:
-        if not api_key:
-            st.error("配置缺失: GROQ_API_KEY")
-        else:
-            date_str = lhb_date.strftime('%Y-%m-%d')
-            with st.spinner(f"正在深入节点获取 {date_str} 龙虎榜数据... (可能需要10秒同步行情)"):
-                fetcher = LonghubangDataFetcher()
-                raw_result = fetcher.get_longhubang_data(date_str)
+        col_date, col_btn = st.columns([1, 2])
+        with col_date:
+            lhb_date = st.date_input("选择龙虎榜日期", datetime.now() - timedelta(days=1))
+        with col_btn:
+            st.write("") # 占位用于垂直对齐
+            run_lhb_btn = st.button("🚀 启动智瞰龙虎分析集群", type="primary", use_container_width=True)
 
-            if raw_result and raw_result.get('data'):
-                data_list = raw_result['data']
-                summary = fetcher.analyze_data_summary(data_list)
-                formatted_data = fetcher.format_data_for_ai(data_list, summary)
-
-                st.success(f"✓ 成功获取 {len(data_list)} 条记录！激活AI集群协同计算...")
-
-                agents = LonghubangAgents()
-                all_analyses = []
-
-                # 1. 游资行为分析
-                with st.spinner("🎯 游资行为分析师正在勾勒画像..."):
-                    yz_res = agents.youzi_behavior_analyst(formatted_data, summary)
-                    all_analyses.append(yz_res)
-                    with st.expander("🎯 游资行为分析报告", expanded=False):
-                        st.markdown(yz_res['analysis'])
-
-                # 2. 个股潜力分析
-                with st.spinner("📈 个股潜力分析师正在深度挖掘爆发股..."):
-                    stock_res = agents.stock_potential_analyst(formatted_data, summary)
-                    all_analyses.append(stock_res)
-                    with st.expander("📈 个股潜力分析报告", expanded=False):
-                        st.markdown(stock_res['analysis'])
-
-                # 3. 题材追踪分析
-                with st.spinner("🔥 题材追踪分析师正在定位主线轮动..."):
-                    theme_res = agents.theme_tracker_analyst(formatted_data, summary)
-                    all_analyses.append(theme_res)
-                    with st.expander("🔥 题材追踪分析报告", expanded=False):
-                        st.markdown(theme_res['analysis'])
-
-                # 4. 风险控制分析
-                with st.spinner("⚠️ 风险控制专家正在排除雷区与资金陷阱..."):
-                    risk_res = agents.risk_control_specialist(formatted_data, summary)
-                    all_analyses.append(risk_res)
-                    with st.expander("⚠️ 风险控制扫描报告", expanded=False):
-                        st.markdown(risk_res['analysis'])
-
-                # 5. 首席策略师综合评估
-                with st.spinner("👔 首席策略师正在综合各方情报，生成最终军令状..."):
-                    chief_res = agents.chief_strategist(all_analyses)
-                    st.markdown("### 👔 首席策略师最终研判")
-                    st.markdown(chief_res['analysis'])
+        if run_lhb_btn:
+            if not api_key:
+                st.error("配置缺失: GROQ_API_KEY")
             else:
-                st.error(f"未能获取到 {date_str} 的龙虎榜数据，该日可能为周末或 API 暂时受限。")
+                date_str = lhb_date.strftime('%Y-%m-%d')
+                with st.spinner(f"正在深入节点获取 {date_str} 龙虎榜数据..."):
+                    fetcher = LonghubangDataFetcher()
+                    raw_result = fetcher.get_longhubang_data(date_str)
+
+                if raw_result and raw_result.get('data'):
+                    data_list = raw_result['data']
+                    summary = fetcher.analyze_data_summary(data_list)
+                    formatted_data = fetcher.format_data_for_ai(data_list, summary)
+
+                    st.success(f"✓ 成功获取 {len(data_list)} 条记录！激活AI集群协同计算...")
+
+                    agents = LonghubangAgents()
+                    all_analyses = []
+
+                    # 1. 游资行为分析
+                    with st.spinner("🎯 游资行为分析师正在勾勒画像..."):
+                        yz_res = agents.youzi_behavior_analyst(formatted_data, summary)
+                        all_analyses.append(yz_res)
+                        with st.expander("🎯 游资行为分析报告", expanded=False):
+                            st.markdown(yz_res['analysis'])
+
+                    # 2. 个股潜力分析
+                    with st.spinner("📈 个股潜力分析师正在深度挖掘爆发股..."):
+                        stock_res = agents.stock_potential_analyst(formatted_data, summary)
+                        all_analyses.append(stock_res)
+                        with st.expander("📈 个股潜力分析报告", expanded=False):
+                            st.markdown(stock_res['analysis'])
+
+                    # 3. 题材追踪分析
+                    with st.spinner("🔥 题材追踪分析师正在定位主线轮动..."):
+                        theme_res = agents.theme_tracker_analyst(formatted_data, summary)
+                        all_analyses.append(theme_res)
+                        with st.expander("🔥 题材追踪分析报告", expanded=False):
+                            st.markdown(theme_res['analysis'])
+
+                    # 4. 风险控制分析
+                    with st.spinner("⚠️ 风险控制专家正在排除雷区与资金陷阱..."):
+                        risk_res = agents.risk_control_specialist(formatted_data, summary)
+                        all_analyses.append(risk_res)
+                        with st.expander("⚠️ 风险控制扫描报告", expanded=False):
+                            st.markdown(risk_res['analysis'])
+
+                    # 5. 首席策略师综合评估
+                    with st.spinner("👔 首席策略师正在综合各方情报，生成最终军令状..."):
+                        chief_res = agents.chief_strategist(all_analyses)
+                        st.markdown("### 👔 首席策略师最终研判")
+                        st.markdown(chief_res['analysis'])
+                else:
+                    st.error(f"未能获取到 {date_str} 的龙虎榜数据，该日可能为周末或 API 暂时受限。")
