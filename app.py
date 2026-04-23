@@ -4,6 +4,8 @@ import pandas as pd
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+import urllib3
+import json
 import re
 import akshare as ak
 import tushare as ts
@@ -837,7 +839,237 @@ def call_ai(prompt, model=None, temperature=0.3):
         return completion.choices[0].message.content
     except Exception as e:
         return f"❌ AI 计算节点故障: {e}"
+# ================= 宏观分析与数据采集模块 (整合版) =================
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+class MacroAnalysisDataFetcher:
+    """宏观分析板块数据获取器"""
+    NBS_URL = "https://data.stats.gov.cn/easyquery.htm"
+    NBS_SERIES_CONFIG = {
+        "gdp_yoy": {"dbcode": "hgjd", "group_code": "A0103", "series_code": "A010301", "label": "GDP当季同比", "unit": "%", "period": "LAST8", "transform": "index_minus_100"},
+        "industrial_yoy": {"dbcode": "hgyd", "group_code": "A0201", "series_code": "A020101", "label": "规上工业增加值同比", "unit": "%", "period": "LAST8"},
+        "cpi_yoy": {"dbcode": "hgyd", "group_code": "A01010J", "series_code": "A01010J01", "label": "CPI同比", "unit": "%", "period": "LAST8", "transform": "index_minus_100"},
+        "ppi_yoy": {"dbcode": "hgyd", "group_code": "A010801", "series_code": "A01080101", "label": "PPI同比", "unit": "%", "period": "LAST8", "transform": "index_minus_100"},
+        "manufacturing_pmi": {"dbcode": "hgyd", "group_code": "A0B01", "series_code": "A0B0101", "label": "制造业PMI", "unit": "", "period": "LAST8"},
+        "non_manufacturing_pmi": {"dbcode": "hgyd", "group_code": "A0B02", "series_code": "A0B0201", "label": "非制造业商务活动指数", "unit": "", "period": "LAST8"},
+        "m2_yoy": {"dbcode": "hgyd", "group_code": "A0D01", "series_code": "A0D0102", "label": "M2同比", "unit": "%", "period": "LAST8"},
+        "retail_sales_yoy": {"dbcode": "hgyd", "group_code": "A0701", "series_code": "A070104", "label": "社零累计同比", "unit": "%", "period": "LAST8"},
+        "fixed_asset_yoy": {"dbcode": "hgyd", "group_code": "A0401", "series_code": "A040102", "label": "固定资产投资累计同比", "unit": "%", "period": "LAST8"},
+        "real_estate_invest_yoy": {"dbcode": "hgyd", "group_code": "A0601", "series_code": "A060102", "label": "房地产开发投资累计同比", "unit": "%", "period": "LAST8"},
+        "urban_unemployment": {"dbcode": "hgyd", "group_code": "A0E01", "series_code": "A0E0101", "label": "全国城镇调查失业率", "unit": "%", "period": "LAST8"},
+    }
+    A_SHARE_INDEX_CONFIG = {"上证指数": "sh000001", "深证成指": "sz399001", "创业板指": "sz399006", "沪深300": "sh000300"}
+    SECTOR_STOCK_POOLS = {
+        "银行": [{"code": "600036", "name": "招商银行"}, {"code": "601166", "name": "兴业银行"}],
+        "券商": [{"code": "300059", "name": "东方财富"}, {"code": "600030", "name": "中信证券"}],
+        "半导体": [{"code": "002371", "name": "北方华创"}, {"code": "688981", "name": "中芯国际"}],
+        "算力AI": [{"code": "300308", "name": "中际旭创"}, {"code": "601138", "name": "工业富联"}],
+        "消费电子": [{"code": "002475", "name": "立讯精密"}, {"code": "300433", "name": "蓝思科技"}],
+        "房地产": [{"code": "600048", "name": "保利发展"}, {"code": "000002", "name": "万科A"}],
+        "医药": [{"code": "600276", "name": "恒瑞医药"}, {"code": "688235", "name": "百济神州"}]
+    }
+    SECTOR_ALIASES = {"AI": ["算力AI"], "红利": ["银行", "煤炭"]}
+
+    def fetch_all_data(self) -> Dict[str, Any]:
+        result = {"success": False, "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "macro_series": {}, "macro_snapshot": {}, "macro_tables": {}, "market_indices": {}, "news": [], "candidate_pools": self.SECTOR_STOCK_POOLS, "rule_based_sector_view": {}, "errors": []}
+        for key, config in self.NBS_SERIES_CONFIG.items():
+            try:
+                result["macro_series"][key] = self._fetch_nbs_series(config)
+            except Exception as exc:
+                result["errors"].append(f"{config['label']}: {exc}")
+        result["macro_snapshot"] = self._build_macro_snapshot(result["macro_series"])
+        result["macro_tables"] = self._build_macro_tables(result["macro_series"])
+        result["rule_based_sector_view"] = self.build_rule_based_sector_view(result["macro_snapshot"])
+        try: result["market_indices"] = self._fetch_market_indices()
+        except Exception as exc: result["errors"].append(f"市场指数: {exc}")
+        try: result["news"] = self._fetch_macro_news()
+        except Exception as exc: result["errors"].append(f"宏观新闻: {exc}")
+        result["success"] = bool(result["macro_snapshot"])
+        return result
+
+    def _fetch_nbs_series(self, config: Dict[str, Any]) -> List[Dict[str, Any]]:
+        params = {"m": "QueryData", "dbcode": config["dbcode"], "rowcode": "zb", "colcode": "sj", "wds": "[]", "dfwds": json.dumps([{"wdcode": "zb", "valuecode": config["group_code"]}, {"wdcode": "sj", "valuecode": config["period"]}], ensure_ascii=False), "k1": str(int(time.time() * 1000))}
+        res = requests.post(self.NBS_URL, params=params, verify=False, timeout=15)
+        data = res.json()["returndata"]
+        indicator_nodes = {item["code"]: item for item in data["wdnodes"][0]["nodes"]}
+        time_nodes = {item["code"]: item for item in data["wdnodes"][1]["nodes"]}
+        rows = []
+        for node in data["datanodes"]:
+            match = re.search(r"zb\.([^_]+)_sj\.([^_]+)", node["code"])
+            if not match or match.group(1) != config["series_code"]: continue
+            val = node.get("data", {}).get("data")
+            if val in ("", None) or node.get("data", {}).get("strdata") == "": continue
+            v_raw = float(val)
+            v_trans = round(v_raw - 100, 2) if config.get("transform") == "index_minus_100" else round(v_raw, 2)
+            rows.append({"series_code": match.group(1), "series_label": config["label"], "period_code": match.group(2), "period_label": time_nodes.get(match.group(2), {}).get("cname", ""), "value_raw": v_raw, "value": v_trans, "unit": config.get("unit", "")})
+        return sorted(rows, key=lambda x: x["period_code"], reverse=True)
+
+    def _build_macro_snapshot(self, macro_series):
+        snapshot = {}
+        for k, s in macro_series.items():
+            if not s: continue
+            latest, prev = s[0], s[1] if len(s) > 1 else None
+            snapshot[k] = {"label": latest["series_label"], "value": latest["value"], "value_raw": latest["value_raw"], "unit": latest["unit"], "period_label": latest["period_label"], "change": round(latest["value"] - prev["value"], 2) if prev else None}
+        return snapshot
+
+    def _build_macro_tables(self, macro_series):
+        return {k: pd.DataFrame([{"期间": i["period_label"], "数值": i["value"], "原始值": i["value_raw"], "单位": i["unit"] or "-"} for i in s]) for k, s in macro_series.items() if s}
+
+    def _fetch_market_indices(self):
+        res = {}
+        for label, symbol in self.A_SHARE_INDEX_CONFIG.items():
+            df = ak.stock_zh_index_daily(symbol=symbol)
+            if df is None or df.empty: continue
+            latest, prev = df.iloc[-1], df.iloc[-2] if len(df) > 1 else df.iloc[-1]
+            res[label] = {"close": round(float(latest["close"]), 2), "date": str(latest["date"]), "daily_change_pct": round(((float(latest["close"]) - float(prev["close"])) / float(prev["close"])) * 100, 2) if float(prev["close"]) != 0 else 0.0, "pct_20d": self._calc_return(df, 20), "pct_60d": self._calc_return(df, 60)}
+        return res
+
+    def _fetch_macro_news(self):
+        df = ak.stock_info_global_em()
+        if df is None or df.empty: return []
+        kw = ["财政", "货币", "央行", "地产", "消费", "PMI", "CPI"]
+        return [{"title": r["标题"], "summary": str(r.get("摘要", ""))[:180], "publish_time": str(r.get("发布时间", ""))} for _, r in df.iterrows() if any(k in str(r.get("标题")) or k in str(r.get("摘要")) for k in kw)][:12]
+
+    def _calc_return(self, df, days):
+        if len(df) <= days: return 0.0
+        base = float(df.iloc[-days - 1]["close"])
+        return round((float(df.iloc[-1]["close"]) - base) / base * 100, 2) if base != 0 else 0.0
+
+    def build_rule_based_sector_view(self, snapshot):
+        return {"market_view": "结构性机会为主", "bullish_sectors": [], "bearish_sectors": [], "watch_signals": []}
+
+    def build_stock_candidates_for_sectors(self, sectors):
+        return [s for sec in sectors for s in self.SECTOR_STOCK_POOLS.get(sec, [])][:10]
+
+    def build_prompt_context(self, data):
+        lines = ["===== 当前国内宏观数据快照 ====="]
+        for k, v in data.get("macro_snapshot", {}).items():
+            lines.append(f"- {v['label']}: {v['value']}{v['unit']} ({v['period_label']})")
+        lines.append("\n===== A股指数快照 =====")
+        for k, v in data.get("market_indices", {}).items():
+            lines.append(f"- {k}: {v['close']}, 日涨跌 {v['daily_change_pct']}%")
+        lines.append("\n===== 可选板块池 =====\n" + "、".join(self.SECTOR_STOCK_POOLS.keys()))
+        return "\n".join(lines)
+
+
+class MacroAnalysisAgents:
+    """基于主程序 call_ai 接口的宏观智能体集群"""
+    def macro_analyst_agent(self, context_text: str) -> Dict:
+        prompt = f"你是一位资深中国宏观经济研究员。请严格基于下面的数据，分析当前国内宏观经济形势。\n\n{context_text}\n重点回答：1.当前经济所处阶段。2.核心矛盾。3.关键跟踪变量。4.对A股投资的影响。"
+        return self._call_text("你是中国宏观经济分析师", prompt, "宏观总量分析师", ["增长", "通胀", "信用"])
+
+    def policy_analyst_agent(self, context_text: str) -> Dict:
+        prompt = f"你是一位资深的政策与流动性分析师。请基于以下数据评估中国政策环境与流动性。\n\n{context_text}\n重点回答：1.当前政策组合倾向。2.流动性对A股估值的支撑。3.A股风格与板块轮动含义。"
+        return self._call_text("你是政策流动性分析师", prompt, "政策流动性分析师", ["货币", "财政", "风格"])
+
+    def sector_mapper_agent(self, context_text: str, sector_pool: List[str]) -> Dict:
+        prompt = f"你是行业配置分析师。请结合数据，从以下板块池选择未来1季度受益和承压板块。\n板块池：{', '.join(sector_pool)}\n\n数据：\n{context_text}\n请只返回JSON：{{\"market_view\": \"...\", \"bullish_sectors\": [{{\"sector\":\"银行\", \"logic\":\"...\"}}], \"bearish_sectors\": []}}"
+        structured = self._call_json("只输出合法JSON", prompt, {"market_view": "结构性震荡", "bullish_sectors": [], "bearish_sectors": []})
+        analysis_prompt = f"请基于以下JSON写一份A股行业配置报告：\n{json.dumps(structured, ensure_ascii=False)}\n包含市场主线、看多/看空逻辑及传导链。"
+        analysis = call_ai(f"你是A股行业配置专家\n\n{analysis_prompt}")
+        return {"agent_name": "行业映射分析师", "analysis": analysis, "structured": structured}
+
+    def stock_selector_agent(self, context_text: str, sector_view: Dict, stock_candidates: List[Dict]) -> Dict:
+        cand_str = json.dumps(stock_candidates, ensure_ascii=False)
+        prompt = f"你是选股分析师。结合行业视图从候选池中选股。\n行业视图：\n{json.dumps(sector_view, ensure_ascii=False)}\n候选池：\n{cand_str}\n请只返回JSON格式包含 'recommended_stocks' 和 'watchlist'。"
+        structured = self._call_json("只输出合法JSON", prompt, {"recommended_stocks": stock_candidates[:2], "watchlist": []})
+        analysis_prompt = f"请基于结构化结果写一份选股说明：\n{json.dumps(structured, ensure_ascii=False)}\n解释适配逻辑，指出催化剂与风险。"
+        analysis = call_ai(f"你是A股选股专家\n\n{analysis_prompt}")
+        return {"agent_name": "优质标的分析师", "analysis": analysis, "structured": structured}
+
+    def chief_strategist_agent(self, context_text: str, macro_report: str, policy_report: str, sector_view: Dict) -> Dict:
+        prompt = f"你是首席策略官，请给出A股后市综合报告。\n\n宏观数据：\n{context_text}\n\n【宏观研判】\n{macro_report}\n\n【政策研判】\n{policy_report}\n\n【行业映射】\n{json.dumps(sector_view, ensure_ascii=False)}\n\n要求输出：宏观判断、后市展望、利多利空板块及风险跟踪。"
+        return self._call_text("你是首席策略官", prompt, "首席策略官", ["总策略", "配置"])
+
+    def _call_text(self, sys_prompt, user_prompt, agent_name, focus_areas):
+        res = call_ai(f"{sys_prompt}\n\n{user_prompt}")
+        return {"agent_name": agent_name, "analysis": res, "focus_areas": focus_areas}
+
+    def _call_json(self, sys_prompt, user_prompt, fallback):
+        res = call_ai(f"{sys_prompt}\n\n{user_prompt}")
+        if not res: return fallback
+        match = re.search(r"(\{.*\})", res.strip(), re.S)
+        if match:
+            try: return json.loads(match.group(1))
+            except: pass
+        return fallback
+
+class MacroAnalysisEngine:
+    def run_full_analysis(self, progress_callback=None):
+        results = {"success": False, "raw_data": {}, "agents_analysis": {}, "sector_view": {}, "candidate_stocks": [], "errors": []}
+        try:
+            fetcher = MacroAnalysisDataFetcher()
+            agents = MacroAnalysisAgents()
+            if progress_callback: progress_callback(10, "正在获取国家统计局宏观数据...")
+            raw_data = fetcher.fetch_all_data()
+            results["raw_data"] = raw_data
+            ctx = fetcher.build_prompt_context(raw_data)
+            
+            if progress_callback: progress_callback(30, "宏观与政策分析师正在研判...")
+            macro_res = agents.macro_analyst_agent(ctx)
+            policy_res = agents.policy_analyst_agent(ctx)
+            
+            if progress_callback: progress_callback(60, "行业分析师生成映射...")
+            sector_res = agents.sector_mapper_agent(ctx, list(fetcher.SECTOR_STOCK_POOLS.keys()))
+            sector_view = sector_res.get("structured", {})
+            
+            bullish_sectors = [s.get("sector") for s in sector_view.get("bullish_sectors", []) if s.get("sector")]
+            cands = fetcher.build_stock_candidates_for_sectors(bullish_sectors)
+            results["candidate_stocks"] = cands
+            
+            if progress_callback: progress_callback(80, "筛选标的与生成最终策略...")
+            stock_res = agents.stock_selector_agent(ctx, sector_view, cands)
+            chief_res = agents.chief_strategist_agent(ctx, macro_res["analysis"], policy_res["analysis"], sector_view)
+            
+            results["agents_analysis"] = {"macro": macro_res, "policy": policy_res, "sector": sector_res, "stock": stock_res, "chief": chief_res}
+            results["sector_view"] = sector_view
+            results["stock_view"] = stock_res.get("structured", {})
+            results["success"] = True
+            if progress_callback: progress_callback(100, "分析完成")
+        except Exception as e:
+            results["error"] = str(e)
+        return results
+
+# ====== 宏观 UI 渲染函数 ======
+def display_macro_analysis_ui():
+    st.info("本板块通过国家统计局官方接口抓取最新宏观经济数据，并联动 AI 多智能体进行 A 股大势研判与行业映射。")
+    if st.button("🚀 启动全局宏观深度推演", type="primary", use_container_width=True):
+        if not api_key:
+            st.error("配置缺失: GROQ_API_KEY")
+            return
+        
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        def p_call(pct, txt):
+            progress_bar.progress(pct)
+            status_text.text(txt)
+            
+        engine = MacroAnalysisEngine()
+        res = engine.run_full_analysis(progress_callback=p_call)
+        progress_bar.empty()
+        status_text.empty()
+        
+        if res.get("success"):
+            st.success("推演完成！")
+            mt1, mt2, mt3, mt4 = st.tabs(["📌 首席综合结论", "📊 宏观核心数据", "🏭 行业多空映射", "🧠 智能体推演过程"])
+            with mt1:
+                st.markdown(res["agents_analysis"]["chief"]["analysis"])
+            with mt2:
+                st.write("##### 国家统计局最新宏观快照")
+                snap = res["raw_data"].get("macro_snapshot", {})
+                if snap:
+                    df_snap = pd.DataFrame([{"指标": v["label"], "最新值": f"{v['value']}{v['unit']}", "发布期": v["period_label"], "环比/同比变动": f"{v['change']:+.2f}{v['unit']}" if v.get("change") else "-"} for k,v in snap.items()])
+                    st.dataframe(df_snap, use_container_width=True, hide_index=True)
+            with mt3:
+                st.markdown(res["agents_analysis"]["sector"]["analysis"])
+            with mt4:
+                with st.expander("宏观总量分析师报告"): st.markdown(res["agents_analysis"]["macro"]["analysis"])
+                with st.expander("政策流动性分析师报告"): st.markdown(res["agents_analysis"]["policy"]["analysis"])
+                with st.expander("优质标的筛选报告"): st.markdown(res["agents_analysis"]["stock"]["analysis"])
+        else:
+            st.error(f"推演失败: {res.get('error')}")
+# ================= 宏观分析板块结束 =================
 
 # ================= 智瞰龙虎榜数据与分析模块 =================
 class LonghubangDataFetcher:
@@ -1532,25 +1764,12 @@ with tab1:
 """
                             st.markdown(call_ai(prompt))
 
-# ================= Tab 2: 宏观大盘推演 =================
+# ================= Tab 2: 宏观大盘推演 (已升级为多智能体版本) =================
 with tab2:
     with st.container(border=True):
-        st.markdown("#### 📊 全盘系统级推演")
-        st.write("结合全局宏观看板与近期市场结构，进行大局观研判。")
-        if st.button("运行大盘沙盘推演", type="primary"):
-            if not api_key:
-                st.error("配置缺失: GROQ_API_KEY")
-            else:
-                with st.spinner("推演引擎初始化..."):
-                    prompt = f"""
-你现在是高盛首席宏观策略师。请基于当前 A 股与外汇的精准数据进行大局观推演：
-实时数据：{str(pulse_data)}
-请输出：
-1. 市场全景定调（分化还是普涨）
-2. 北向资金意愿推断（基于汇率）
-3. 短期沙盘推演方向
-"""
-                    st.markdown(call_ai(prompt, temperature=0.4))
+        st.markdown("#### 📊 全局宏观基本面推演")
+        display_macro_analysis_ui()
+
 
 # ================= Tab 3: 热点资金板块 =================
 with tab3:
