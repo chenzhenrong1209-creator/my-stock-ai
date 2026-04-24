@@ -6,3 +6,4 @@ akshare
 tushare
 baostock
 plotly
+pywencai
