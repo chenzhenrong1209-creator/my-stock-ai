@@ -7,13 +7,13 @@ from urllib3.util.retry import Retry
 import urllib3
 import json
 import re
+import sqlite3
+import pywencai 
 import akshare as ak
 import tushare as ts
 import baostock as bs
 import random
 import time
-import sqlite3
-import pywencai 
 from datetime import datetime, timedelta
 from typing import Dict, Any, List
 from collections import Counter
