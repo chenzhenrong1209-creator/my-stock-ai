@@ -2024,8 +2024,3 @@ with tab5:
                         st.markdown(chief_res['analysis'])
                 else:
                     st.error(f"未能获取到 {date_str} 的龙虎榜数据，该日可能为周末或 API 暂时受限。")
-# ================= Tab 6: 主力选股 =================
-with tab6:
-    with st.container(border=True):
-        st.markdown("#### 🔥 主力大单净流入批量分析")
-        display_main_force_selector()
