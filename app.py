@@ -1070,6 +1070,116 @@ def display_macro_analysis_ui():
         else:
             st.error(f"推演失败: {res.get('error')}")
 # ================= 宏观分析板块结束 =================
+# ================= 智胜主力选股与 AI 批量分析模块 (整合版) =================
+import pywencai
+import sqlite3
+
+class MainForceBatchDatabase:
+    """主力选股历史数据库管理"""
+    def __init__(self, db_path="main_force_batch.db"):
+        self.db_path = db_path
+        self._init_database()
+
+    def _init_database(self):
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('''CREATE TABLE IF NOT EXISTS batch_analysis_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            analysis_time TEXT,
+            stock_count INTEGER,
+            summary TEXT,
+            full_data TEXT,
+            recommended_stocks TEXT
+        )''')
+        conn.commit()
+        conn.close()
+
+    def save_record(self, stock_count, summary, full_data, recommended_stocks):
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('INSERT INTO batch_analysis_history (analysis_time, stock_count, summary, full_data, recommended_stocks) VALUES (?, ?, ?, ?, ?)',
+                       (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), stock_count, summary, 
+                        json.dumps(full_data, ensure_ascii=False), json.dumps(recommended_stocks, ensure_ascii=False)))
+        conn.commit()
+        conn.close()
+
+class MainForceStockSelector:
+    """主力资金数据抓取"""
+    def get_main_force_stocks(self, query="主力资金净流入前50名; 涨幅; 行业"):
+        try:
+            res = pywencai.get(question=query, loop=True)
+            if res is None or res.empty: return []
+            # 统一字段名映射
+            res = res.rename(columns={
+                '股票代码': 'code', '股票简称': 'name', 
+                '最新涨跌幅': 'pct_chg', '所属同花顺行业': 'industry'
+            })
+            return res.head(50).to_dict('records')
+        except Exception as e:
+            st.error(f"主力数据抓取失败: {e}")
+            return []
+
+class MainForceAnalyzer:
+    """主力选股 AI 分析逻辑 (适配 4.20 版本 call_ai)"""
+    def __init__(self):
+        self.selector = MainForceStockSelector()
+        self.db = MainForceBatchDatabase()
+
+    def run_batch_analysis(self, progress_callback=None):
+        if progress_callback: progress_callback(20, "正在同步主力资金异动数据...")
+        stocks = self.selector.get_main_force_stocks()
+        if not stocks: return None
+
+        if progress_callback: progress_callback(50, "AI 智能体正在解析资金流向与板块热度...")
+        context = f"当前主力净流入前50名股票数据摘要：\n{json.dumps(stocks[:15], ensure_ascii=False)}"
+        
+        # 调用 4.20 版本原有的 call_ai 接口
+        prompt = f"你现在是首席主力资金分析师。请分析以下主力流入数据，指出当前资金攻击的核心板块，并从这批股票中挑选出3只最具爆发潜力的标的，给出逻辑：\n{context}"
+        ai_analysis = call_ai(prompt)
+        
+        # 提取推荐标的 (简单正则模拟)
+        recommended = stocks[:3] 
+        self.db.save_record(len(stocks), ai_analysis, stocks, recommended)
+        
+        if progress_callback: progress_callback(100, "主力分析报告生成完毕")
+        return {"summary": ai_analysis, "stocks": stocks, "recommended": recommended}
+
+def display_main_force_selector():
+    """主力选股 UI 渲染"""
+    st.info("本模块通过『问财』引擎实时追踪主力大单净流入标的，并由 AI 智能体进行批量板块效应分析与个股筛选。")
+    
+    col1, col2 = st.columns([1, 1])
+    with col1:
+        if st.button("🔍 开启主力资金批量分析", type="primary", use_container_width=True):
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            analyzer = MainForceAnalyzer()
+            res = analyzer.run_batch_analysis(lambda p, t: (progress_bar.progress(p), status_text.text(t)))
+            if res:
+                st.session_state['mf_results'] = res
+                st.success("分析成功！")
+            progress_bar.empty()
+            status_text.empty()
+    
+    with col2:
+        if st.button("📂 查看历史分析记录", use_container_width=True):
+            st.session_state['mf_view_history'] = True
+
+    if 'mf_results' in st.session_state:
+        res = st.session_state['mf_results']
+        t1, t2 = st.tabs(["📑 AI 深度研判报告", "📊 原始异动清单"])
+        with t1:
+            st.markdown(res['summary'])
+        with t2:
+            st.dataframe(pd.DataFrame(res['stocks']), use_container_width=True)
+
+    if st.session_state.get('mf_view_history'):
+        with st.expander("历史分析记录", expanded=True):
+            conn = sqlite3.connect("main_force_batch.db")
+            history_df = pd.read_sql_query("SELECT id, analysis_time, stock_count FROM batch_analysis_history ORDER BY id DESC", conn)
+            st.table(history_df)
+            if st.button("关闭历史"): st.session_state['mf_view_history'] = False
+# ================= 主力选股模块结束 =================
 
 # ================= 智瞰龙虎榜数据与分析模块 =================
 class LonghubangDataFetcher:
@@ -1541,12 +1651,14 @@ st.markdown("<br>", unsafe_allow_html=True)
 
 # ================= 终端功能选项卡 =================
 # 新增 tab5 龙虎榜模块
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "🎯 I. 个股标的解析",
     "📈 II. 宏观大盘推演",
     "🔥 III. 资金热点板块",
     "🦅 IV. 高阶情报终端",
     "🐉 V. 智瞰龙虎榜解析"
+    "😈 VI. 主力选股"
+
 ])
 
 # ================= Tab 1: 个股解析 =================
@@ -1913,3 +2025,8 @@ with tab5:
                         st.markdown(chief_res['analysis'])
                 else:
                     st.error(f"未能获取到 {date_str} 的龙虎榜数据，该日可能为周末或 API 暂时受限。")
+# ================= Tab 6: 主力选股 =================
+with tab6:
+    with st.container(border=True):
+        st.markdown("#### 🔥 主力大单净流入批量分析")
+        display_main_force_selector()
