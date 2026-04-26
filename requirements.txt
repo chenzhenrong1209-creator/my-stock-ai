@@ -7,3 +7,4 @@ tushare
 baostock
 plotly
 pywencai
+jqdatasdk
