@@ -1523,16 +1523,17 @@ class LonghubangAgents:
             "analysis": analysis,
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
         }
-# ==========================================
-# ===================== 新增：主力资金选股整合模块 =====================
-# =====================================================================
-import pywencai
+# =================================================================
+# 新增功能模块：主力资金选股一体化投研系统 (含数据/AI/UI/DB)
+# =================================================================
 import sqlite3
 import json
-import re
+import pywencai
+import pandas as pd
+from datetime import datetime, timedelta
 
+# --- 1. 数据库持久化层 (整合自：主力选股批量分析历史记录数据库模块) ---
 class MainForceBatchDatabase:
-    """主力选股分析历史数据库管理类"""
     def __init__(self, db_path="main_force_batch.db"):
         self.db_path = db_path
         self._init_database()
@@ -1546,175 +1547,163 @@ class MainForceBatchDatabase:
                 analysis_date TEXT NOT NULL,
                 batch_count INTEGER NOT NULL,
                 success_count INTEGER NOT NULL,
+                failed_count INTEGER NOT NULL,
                 results_json TEXT NOT NULL,
+                summary_report TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
         conn.commit()
         conn.close()
 
-    def save_analysis(self, batch_count, success_count, results_json):
+    def save_analysis(self, batch_count, success_count, results, report=""):
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-        analysis_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        res_json = json.dumps(results, ensure_ascii=False)
         cursor.execute('''
             INSERT INTO batch_analysis_history 
-            (analysis_date, batch_count, success_count, results_json)
-            VALUES (?, ?, ?, ?)
-        ''', (analysis_date, batch_count, success_count, results_json))
+            (analysis_date, batch_count, success_count, failed_count, results_json, summary_report)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), batch_count, success_count, 0, res_json, report))
         conn.commit()
         conn.close()
 
-class MainForceStockSelector:
-    """主力资金数据获取与清洗类"""
-    def get_main_force_stocks(self, start_date=None, days_ago=None, min_market_cap=10.0, max_market_cap=5000.0):
+    def get_history(self, limit=10):
+        conn = sqlite3.connect(self.db_path)
+        df = pd.read_sql_query(f"SELECT * FROM batch_analysis_history ORDER BY id DESC LIMIT {limit}", conn)
+        conn.close()
+        return df
+
+# 实例化全局数据库
+mf_db = MainForceBatchDatabase()
+
+# --- 2. 数据获取与智能筛选层 (整合自：主力选股模块) ---
+class MainForceSelector:
+    def fetch_data(self, days=90, min_cap=50, max_cap=5000, max_change=30.0):
+        # 构造问财深度查询语句
+        date_str = (datetime.now() - timedelta(days=days)).strftime("%Y年%m月%d日")
+        query = (f"{date_str}以来主力资金净流入前100名，计算区间涨跌幅，"
+                 f"总市值在{min_cap}亿到{max_cap}亿之间，非ST非新股，"
+                 f"所属行业，净利润，滚动市盈率")
+        
         try:
-            if not start_date:
-                date_obj = datetime.now() - timedelta(days=days_ago)
-                start_date = f"{date_obj.year}年{date_obj.month}月{date_obj.day}日"
+            df = pywencai.get(query=query, loop=True)
+            if df is None or df.empty: return None
             
-            # 使用问财自然语言查询
-            query = (f"{start_date}以来主力资金净流入前100名，并计算区间涨跌幅，市值{min_market_cap}-{max_market_cap}亿，"
-                     f"非st非科创板，所属行业，总市值，净利润，市盈率")
+            # 智能清洗与过滤涨跌幅
+            pct_col = next((c for c in df.columns if '涨跌幅' in c), None)
+            if pct_col:
+                df[pct_col] = pd.to_numeric(df[pct_col], errors='coerce')
+                df = df[df[pct_col] <= max_change].copy()
             
-            result = pywencai.get(query=query, loop=True)
-            if result is None or (isinstance(result, pd.DataFrame) and result.empty):
-                return False, None, "获取数据为空"
-            
-            df = result if isinstance(result, pd.DataFrame) else pd.DataFrame(result)
-            return True, df, f"成功获取{len(df)}只股票"
+            return df
         except Exception as e:
-            return False, None, f"问财接口异常: {str(e)}"
+            st.error(f"问财接口异常: {e}")
+            return None
 
-    def filter_stocks(self, df: pd.DataFrame, max_range_change: float = 30.0) -> pd.DataFrame:
-        if df is None or df.empty: return df
-        filtered_df = df.copy()
+# --- 3. AI 投研分析中枢 (整合自：主力选股AI分析整合模块) ---
+class MainForceAIAnalyst:
+    def __init__(self, api_key, model):
+        self.api_key = api_key
+        self.model = model
+
+    def analyze_pool(self, df, final_n=5):
+        # 准备数据摘要
+        stock_context = df.head(20).to_string(index=False)
         
-        # 智能匹配涨跌幅列名
-        interval_pct_col = next((col for col in df.columns if '涨跌幅' in col), None)
-        if interval_pct_col:
-            filtered_df[interval_pct_col] = pd.to_numeric(filtered_df[interval_pct_col], errors='coerce')
-            filtered_df = filtered_df[(filtered_df[interval_pct_col].notna()) & (filtered_df[interval_pct_col] < max_range_change)]
+        # 模拟原模块中的三大分析师角色进行深度逻辑推理
+        prompt = f"""
+        你现在是量化终端的高级投研集群（资金/行业/基本面三合一）。
+        以下是近期主力资金密集流入的标的数据：
+        {stock_context}
         
-        return filtered_df
-
-class MainForceAnalyzer:
-    """主力选股AI分析引擎 (已接入终端主干 call_ai)"""
-    def __init__(self):
-        self.selector = MainForceStockSelector()
-        self.db = MainForceBatchDatabase()
-
-    def run_full_analysis(self, start_date, days_ago, final_n, max_range_change, min_market_cap, max_market_cap):
-        result = {'success': False, 'final_recommendations': [], 'error': None}
+        请执行以下任务：
+        1. 资金面分析：识别哪些标的是机构合力，哪些是游资短炒。
+        2. 行业面推演：分析这些标的是否处于当前政策或技术爆发期。
+        3. 综合精选：从候选池中选出{final_n}只确定性最高的标的。
         
-        # 1. 获取并筛选数据
-        success, raw_data, msg = self.selector.get_main_force_stocks(start_date, days_ago, min_market_cap, max_market_cap)
-        if not success:
-            result['error'] = msg
-            return result
-            
-        filtered_data = self.selector.filter_stocks(raw_data, max_range_change)
-        if filtered_data.empty:
-            result['error'] = "筛选后无符合条件的股票"
-            return result
-
-        self.raw_stocks = filtered_data
-        data_table_str = filtered_data.head(30).to_string(index=False) # 取前30只防止超Token
+        最后请严格按此 JSON 格式返回，不要包含任何多余文字：
+        {{
+            "analysis_report": "深度分析正文...",
+            "recommendations": [
+                {{"code": "代码", "name": "名称", "logic": "选股逻辑", "target": "参考仓位"}}
+            ]
+        }}
+        """
+        # 调用终端现有的 call_ai 函数
+        response = call_ai(prompt) 
         
-        # 2. 调用终端主干 call_ai 进行三大维度分析
-        summary_prompt = f"候选股票总数: {len(filtered_data)}只\n数据明细:\n{data_table_str}"
-        
-        with st.spinner("🤖 资金流向分析师正在评估..."):
-            fund_prompt = f"系统设定: 你是资金面分析专家。\n任务: 基于以下数据分析资金流向特征，识别主力意图，找出资金集中流入的板块和个股。\n{summary_prompt}"
-            self.fund_flow_analysis = call_ai(fund_prompt, temperature=0.3)
+        try:
+            import re
+            json_match = re.search(r'\{.*\}', response, re.DOTALL)
+            return json.loads(json_match.group())
+        except:
+            return {"analysis_report": response, "recommendations": []}
 
-        with st.spinner("📊 行业板块分析师正在扫描热点..."):
-            ind_prompt = f"系统设定: 你是行业板块分析专家。\n任务: 分析数据中的热点板块持续性，判断资金轮动方向，并评估各行业的后续基本面支撑。\n{summary_prompt}"
-            self.industry_analysis = call_ai(ind_prompt, temperature=0.3)
-
-        with st.spinner("📈 首席策略官正在进行最终研判并生成 JSON 推荐..."):
-            final_prompt = f"""
-            系统设定: 你是拥有20年经验的首席股票研究员。
-            请综合以下信息，从候选股票中精选出 {final_n} 只最优质标的：
-            【资金面观点】\n{self.fund_flow_analysis}\n
-            【行业面观点】\n{self.industry_analysis}\n
-            【原始数据】\n{data_table_str}\n
-            
-            务必严格按照以下 JSON 格式输出结果（不要输出任何多余的 Markdown 标记或其他文字，仅输出合法 JSON）：
-            {{
-              "recommendations": [
-                {{
-                  "rank": 1,
-                  "symbol": "股票代码",
-                  "name": "股票名称",
-                  "reasons": ["综合推荐理由1", "理由2"],
-                  "position": "建议仓位(如20%)",
-                  "risks": "风险提示"
-                }}
-              ]
-            }}
-            """
-            final_resp = call_ai(final_prompt, temperature=0.2)
-            
-            # 解析 JSON
-            try:
-                json_match = re.search(r'```json\s*(\{.*?\})\s*```', final_resp, re.DOTALL)
-                json_str = json_match.group(1) if json_match else final_resp
-                parsed_json = json.loads(json_str)
-                result['final_recommendations'] = parsed_json.get('recommendations', [])
-                result['success'] = True
-                
-                # 存入本地数据库保存历史
-                self.db.save_analysis(len(filtered_data), len(result['final_recommendations']), json.dumps(result['final_recommendations'], ensure_ascii=False))
-            except Exception as e:
-                result['error'] = f"AI 输出 JSON 解析失败: {str(e)}。AI 原始回复: {final_resp[:200]}..."
-                
-        return result
-
-def render_main_force_tab():
-    """主力选股专属 UI 渲染器"""
-    st.markdown("### 🎯 主力资金选股 - 智能筛选与综合推演")
-    st.write("利用 `问财` 抓取海量主力净流入数据，通过AI多空博弈模型，为你精选极具爆发潜力的市场焦点。")
-    st.markdown("---")
+# --- 4. 交互式 UI 界面 (整合自：主力选股UI模块) ---
+def render_main_force_module(api_key, selected_model):
+    st.header("🐋 主力资金深度选股终端")
     
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        date_option = st.selectbox("监控时间区间", ["最近10天", "最近30天", "最近3个月"])
-        days_ago = 10 if date_option == "最近10天" else 30 if date_option == "最近30天" else 90
-    with col2:
-        final_n = st.slider("最终精选数量", 2, 10, 5)
-    with col3:
-        max_change = st.number_input("区间最大涨幅限制(%)", value=30.0, step=5.0, help="剔除已经大涨的高位股")
+    # 侧边功能切换
+    mode = st.radio("功能模式", ["⚡ 实时扫描分析", "📜 历史回溯查看"], horizontal=True)
+    
+    if mode == "⚡ 实时扫描分析":
+        with st.expander("🛠️ 投研参数配置", expanded=True):
+            col1, col2, col3 = st.columns(3)
+            days = col1.slider("资金统计区间 (天)", 30, 250, 90)
+            max_change = col2.number_input("区间涨幅上限 (%)", value=30.0)
+            final_n = col3.slider("AI 精选数量", 3, 10, 5)
+            min_cap, max_cap = st.slider("市值筛选区间 (亿)", 10, 10000, (50, 5000))
 
-    if st.button("🚀 启动主力追踪引擎", type="primary", use_container_width=True):
-        if not api_key:
-            st.error("配置缺失: GROQ_API_KEY")
-            return
+        if st.button("🚀 开始自动化投研扫描", type="primary"):
+            if not api_key:
+                st.warning("请先在侧边栏配置 API KEY")
+                return
+
+            selector = MainForceSelector()
+            analyst = MainForceAIAnalyst(api_key, selected_model)
             
-        analyzer = MainForceAnalyzer()
-        result = analyzer.run_full_analysis(
-            start_date=None, days_ago=days_ago, final_n=final_n, 
-            max_range_change=max_change, min_market_cap=30.0, max_market_cap=5000.0
-        )
-        
-        if result['success']:
-            st.success(f"✅ AI 军团测算完成！已为您锁定 {len(result['final_recommendations'])} 只优质标的。")
-            st.markdown("### ⭐ 首席精选标的池")
-            for rec in result['final_recommendations']:
-                with st.expander(f"🏅 TOP {rec.get('rank', '-')} | {rec.get('name', '未知')} ({rec.get('symbol', '未知')})", expanded=True):
-                    st.markdown("**📌 核心逻辑：**")
-                    for r in rec.get('reasons', []): st.write(f"- {r}")
-                    st.markdown(f"**💰 建议仓位：** {rec.get('position', 'N/A')}")
-                    st.markdown(f"**⚠️ 预警提示：** {rec.get('risks', 'N/A')}")
-            
-            st.markdown("---")
-            st.markdown("### 🤖 投研底稿 (AI 分析师原音)")
-            t1, t2 = st.tabs(["💰 资金流向透视", "📊 行业格局研判"])
-            with t1: st.write(analyzer.fund_flow_analysis)
-            with t2: st.write(analyzer.industry_analysis)
+            with st.spinner("⏳ 正在调用问财引擎抓取主力异动数据..."):
+                df = selector.fetch_data(days, min_cap, max_cap, max_change)
+                
+            if df is not None:
+                st.info(f"🔍 扫描完成，共锁定 {len(df)} 只主力净流入标的，正在启动 AI 投研集群分析...")
+                
+                with st.spinner(f"🤖 使用 {selected_model} 深度解构个股逻辑..."):
+                    res = analyst.analyze_pool(df, final_n)
+                    
+                    # 存储到数据库
+                    mf_db.save_analysis(len(df), len(res['recommendations']), res['recommendations'], res['analysis_report'])
+                
+                # 结果展示
+                st.subheader("⭐ AI 综合精选金股池")
+                for item in res['recommendations']:
+                    with st.container(border=True):
+                        c1, c2 = st.columns([1, 4])
+                        c1.metric(item.get('name'), item.get('code'))
+                        c2.write(f"**核心逻辑**: {item.get('logic')}")
+                        c2.caption(f"📊 建议配置: {item.get('target')}")
+                
+                with st.expander("📝 查看深度投研报告原文", expanded=False):
+                    st.markdown(res['analysis_report'])
+                
+                st.subheader("📋 初筛股票池清单")
+                st.dataframe(df, use_container_width=True)
+            else:
+                st.error("未能抓取到符合条件的数据，请调整市值或涨幅限制。")
+
+    else:
+        st.subheader("历史分析记录")
+        history_df = mf_db.get_history()
+        if not history_df.empty:
+            for _, row in history_df.iterrows():
+                with st.expander(f"📅 分析日期: {row['analysis_date']} | 扫描样本: {row['batch_count']}只"):
+                    st.markdown(row['summary_report'])
+                    recs = json.loads(row['results_json'])
+                    st.table(recs)
         else:
-            st.error(f"❌ 运行失败: {result['error']}")
-# ===================== 主力选股模块结束 =====================
+            st.write("暂无历史记录。")
+
 # ================= 终端全局看板 =================
 st.markdown("### 🌍 宏观市场实时看板")
 pulse_data = get_market_pulse()
@@ -2107,4 +2096,4 @@ with tab5:
                     st.error(f"未能获取到 {date_str} 的龙虎榜数据，该日可能为周末或 API 暂时受限。")
 # ================= Tab 6: 主力资金选股 =================
 with tab6:
-    render_main_force_tab()
+    render_main_force_module(api_key, selected_model)
