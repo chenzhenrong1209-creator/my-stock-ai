@@ -1722,7 +1722,7 @@ def render_main_force_module(api_key, selected_model):
     if mode == "⚡ 实时扫描分析":
         with st.expander("🛠️ 投研参数配置", expanded=True):
             col1, col2, col3 = st.columns(3)
-            days = col1.slider("资金统计区间 (天)", 30, 250, 90)
+            days = col1.slider("资金统计区间 (天)", 1, 10, 5, help="云端模式已切至东财节点，极限支持透视近 10 日主力轨迹")
             max_change = col2.number_input("区间涨幅上限 (%)", value=30.0)
             final_n = col3.slider("AI 精选数量", 3, 10, 5)
             min_cap, max_cap = st.slider("市值筛选区间 (亿)", 10, 10000, (50, 5000))
