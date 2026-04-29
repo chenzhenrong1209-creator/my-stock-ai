@@ -1,10 +1,9 @@
 streamlit
-groq
 pandas
-requests
+pywencai
+groq
 akshare
 tushare
 baostock
 plotly
-pywencai
-jqdatasdk
+requests
