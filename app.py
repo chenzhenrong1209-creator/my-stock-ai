@@ -1577,28 +1577,37 @@ class MainForceBatchDatabase:
 # 实例化全局数据库
 mf_db = MainForceBatchDatabase()
 
-# --- 2. 数据获取与智能筛选层 (整合自：主力选股模块) ---
+# --- 2. 数据获取与智能筛选层 (防弹修复版) ---
 class MainForceSelector:
     def fetch_data(self, days=90, min_cap=50, max_cap=5000, max_change=30.0):
-        # 构造问财深度查询语句
-        date_str = (datetime.now() - timedelta(days=days)).strftime("%Y年%m月%d日")
-        query = (f"{date_str}以来主力资金净流入前100名，计算区间涨跌幅，"
-                 f"总市值在{min_cap}亿到{max_cap}亿之间，非ST非新股，"
-                 f"所属行业，净利润，滚动市盈率")
+        # 1. 极简版问财语句，去除容易导致 NLP 解析崩溃的复杂词汇
+        date_str = (datetime.now() - timedelta(days=days)).strftime("%Y%m%d")
+        query = f"{date_str}至今主力资金净流入前100名，总市值{min_cap}亿到{max_cap}亿，非ST，非停牌"
         
         try:
-            df = pywencai.get(query=query, loop=True)
-            if df is None or df.empty: return None
+            # 2. 移除 loop=True，单次请求更加稳定，降低被封锁概率
+            df = pywencai.get(query=query)
             
-            # 智能清洗与过滤涨跌幅
+            # 3. 增强空值与反爬拦截校验
+            if df is None or (isinstance(df, pd.DataFrame) and df.empty) or isinstance(df, dict):
+                st.error("⚠️ 问财底层拦截：请求被判定为机器人，或未正确生成反爬 Token（请确保系统已安装 Node.js）。")
+                return None
+            
+            # 4. 动态匹配涨跌幅列并深度清洗数据
             pct_col = next((c for c in df.columns if '涨跌幅' in c), None)
             if pct_col:
+                # 问财返回的数据可能带有 '%' 字符串，需要抹除后转为浮点数
+                if df[pct_col].dtype == object:
+                    df[pct_col] = df[pct_col].astype(str).str.replace('%', '', regex=False)
                 df[pct_col] = pd.to_numeric(df[pct_col], errors='coerce')
+                
+                # 过滤涨幅，剔除已经炒高的标的
                 df = df[df[pct_col] <= max_change].copy()
             
             return df
+            
         except Exception as e:
-            st.error(f"问财接口异常: {e}")
+            st.error(f"📡 问财数据流异常崩溃: {e}")
             return None
 
 # --- 3. AI 投研分析中枢 (修复版：内置 Groq 原生调用) ---
