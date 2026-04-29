@@ -1601,17 +1601,20 @@ class MainForceSelector:
             st.error(f"问财接口异常: {e}")
             return None
 
-# --- 3. AI 投研分析中枢 (整合自：主力选股AI分析整合模块) ---
+# --- 3. AI 投研分析中枢 (修复版：内置 Groq 原生调用) ---
+from groq import Groq # 确保顶部有导入这个
+
 class MainForceAIAnalyst:
     def __init__(self, api_key, model):
         self.api_key = api_key
         self.model = model
+        # 直接在这里初始化 Groq 客户端
+        self.client = Groq(api_key=self.api_key)
 
     def analyze_pool(self, df, final_n=5):
         # 准备数据摘要
         stock_context = df.head(20).to_string(index=False)
         
-        # 模拟原模块中的三大分析师角色进行深度逻辑推理
         prompt = f"""
         你现在是量化终端的高级投研集群（资金/行业/基本面三合一）。
         以下是近期主力资金密集流入的标的数据：
@@ -1630,15 +1633,30 @@ class MainForceAIAnalyst:
             ]
         }}
         """
-        # 调用终端现有的 call_ai 函数
-        response = call_ai(prompt) 
         
         try:
+            # 替换掉原来的 call_ai，直接使用标准的 Groq API 请求
+            completion = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": "你是一个精准且专业的A股量化投研分析专家。"},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.3,
+            )
+            
+            response = completion.choices[0].message.content
+            
             import re
             json_match = re.search(r'\{.*\}', response, re.DOTALL)
             return json.loads(json_match.group())
-        except:
-            return {"analysis_report": response, "recommendations": []}
+            
+        except Exception as e:
+            # 加入容错机制，防止 API 抽风导致整个程序崩溃
+            return {
+                "analysis_report": f"⚠️ AI 投研集群调用失败。错误信息: {str(e)}", 
+                "recommendations": []
+            }
 
 # --- 4. 交互式 UI 界面 (整合自：主力选股UI模块) ---
 def render_main_force_module(api_key, selected_model):
