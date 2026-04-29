@@ -1577,21 +1577,66 @@ class MainForceBatchDatabase:
 # 实例化全局数据库
 mf_db = MainForceBatchDatabase()
 
-# --- 2. 数据获取与智能筛选层 (防弹修复版) ---
+# --- 2. 数据获取与智能筛选层 (彻底抛弃问财，改用东方财富/Akshare) ---
+import akshare as ak
+import pandas as pd
+
 class MainForceSelector:
-    def fetch_data(self, days=90, min_cap=50, max_cap=5000, max_change=30.0):
-        # 1. 极简版问财语句，去除容易导致 NLP 解析崩溃的复杂词汇
-        date_str = (datetime.now() - timedelta(days=days)).strftime("%Y%m%d")
-        query = f"{date_str}至今主力资金净流入前100名，总市值{min_cap}亿到{max_cap}亿，非ST，非停牌"
+    def fetch_data(self, days=10, min_cap=50, max_cap=5000, max_change=30.0):
+        # 针对云端 IP 被封，平滑切换至对云服务器更友好的东方财富底层
+        # Akshare 的资金流排名支持 '今日', '3日', '5日', '10日'
+        indicator = "10日" 
+        if days <= 3:
+            indicator = "3日"
+        elif days <= 5:
+            indicator = "5日"
+        # 若传入天数超限，自动降级为极限值 10日，以保障云端稳定性
         
         try:
-            # 2. 移除 loop=True，单次请求更加稳定，降低被封锁概率
-            df = pywencai.get(query=query)
-            
-            # 3. 增强空值与反爬拦截校验
-            if df is None or (isinstance(df, pd.DataFrame) and df.empty) or isinstance(df, dict):
-                st.error("⚠️ 问财底层拦截：请求被判定为机器人，或未正确生成反爬 Token（请确保系统已安装 Node.js）。")
+            # 1. 抓取资金流向排名榜单
+            df_flow = ak.stock_individual_fund_flow_rank(indicator=indicator)
+            if df_flow is None or df_flow.empty:
                 return None
+                
+            # 动态识别列名（适配不同天数导致的表头变化）
+            pct_col = next((c for c in df_flow.columns if '涨跌幅' in c), None)
+            inflow_col = next((c for c in df_flow.columns if '主力净流入-净额' in c), None)
+            
+            # 统一列名规范，防止大模型解析混乱
+            df_flow = df_flow.rename(columns={
+                pct_col: "涨跌幅",
+                inflow_col: "主力净流入净额"
+            })
+            
+            # 2. 抓取全市场实时盘口（用于合并市值和市盈率）
+            df_spot = ak.stock_zh_a_spot_em()
+            df_spot = df_spot[["代码", "总市值", "市盈率-动态"]]
+            
+            # 3. 数据融合
+            df = pd.merge(df_flow, df_spot, on="代码", how="inner")
+            df["总市值"] = df["总市值"] / 100000000  # 转换为亿
+            
+            # 4. 核心清洗与过滤
+            df = df[~df['名称'].str.contains('ST|退')]  # 剔除劣质资产
+            df = df[(df['总市值'] >= min_cap) & (df['总市值'] <= max_cap)] # 市值锁仓
+            
+            # 涨跌幅断层保护
+            df['涨跌幅'] = pd.to_numeric(df['涨跌幅'], errors='coerce')
+            df = df[df['涨跌幅'] <= max_change]
+            
+            # 锁定吸筹前 100 名
+            df = df.sort_values(by="主力净流入净额", ascending=False).head(100)
+            
+            # 精简投喂给 AI 的列，节约 Token 消耗
+            keep_cols = ["代码", "名称", "最新价", "涨跌幅", "主力净流入净额", "总市值", "市盈率-动态"]
+            df = df[[c for c in keep_cols if c in df.columns]]
+            
+            return df
+            
+        except Exception as e:
+            import streamlit as st
+            st.error(f"📡 东方财富数据流异常: {e}")
+            return None
             
             # 4. 动态匹配涨跌幅列并深度清洗数据
             pct_col = next((c for c in df.columns if '涨跌幅' in c), None)
